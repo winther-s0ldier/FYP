@@ -1,0 +1,104 @@
+# =============================================================================
+# Project Configuration
+# =============================================================================
+
+project:
+  name: "real-time-content-moderation"
+  version: "0.1.0"
+
+# --- Hardware ---
+hardware:
+  device: "cuda"              # "cuda" | "cpu"
+  gpu_vram_gb: 24             # RTX 4090 Server
+  fp16: true                  # mixed precision training
+
+# --- Model ---
+model:
+  encoder: "answerdotai/ModernBERT-large"
+  init_from: "unitary/toxic-bert"   # start toxicity head from here
+  max_length: 512                   # reading range upgraded for 4090
+  hidden_size: 1024                 # Large model hidden size
+
+# --- Intent taxonomy ---
+intents:
+  benign:
+    - greeting
+    - question
+    - information_request
+    - small_talk
+    - feedback
+    - help_request
+    - joke
+    - farewell
+  suspicious:
+    - personal_probe
+    - repeated_contact
+    - boundary_testing
+    - unusual_urgency
+  malicious:
+    - threat
+    - harassment
+    - hate_speech
+    - grooming_signal
+    - doxxing_attempt
+    - coordinated_abuse
+
+# --- Training ---
+training:
+  epochs: 5
+  batch_size: 16              # Optimised for 24GB VRAM
+  gradient_accumulation_steps: 1  # No need for accumulation on a 4090
+  learning_rate: 1.0e-5       # Lower LR for Large model stability
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  alpha: 0.5                  # toxicity loss weight (tuned via W&B)
+  beta: 0.5                   # intent loss weight
+  focal_loss_gamma: 2.0
+  focal_loss_alpha: 0.25
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.1
+  seed: 42
+
+# --- Data splits ---
+data:
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  stratify: true
+
+# --- Pipeline thresholds ---
+pipeline:
+  confidence_threshold: 0.65
+  intent_confidence_threshold: 0.70   # min to feed HMM
+  block_threshold: 0.85
+  flag_threshold: 0.65
+  warn_threshold: 0.40
+  session_window_size: 10
+  session_ttl_seconds: 1800
+
+# --- HMM ---
+hmm:
+  n_iter: 100                 # Baum-Welch iterations
+  tol: 1.0e-4
+  uncertain_state: true       # add "uncertain" state for low-conf BERT preds
+
+# --- Escalation ---
+escalation:
+  provider: "groq"            # "groq" | "openai" | "anthropic"
+  groq_model: "llama-3.3-70b-versatile"
+  openai_model: "gpt-4o-mini"
+  max_tokens: 512
+  temperature: 0.1            # low temp for structured JSON output
+
+# --- Evaluation targets ---
+targets:
+  toxicity_f1: 0.85
+  toxicity_auc_roc: 0.92
+  toxicity_precision: 0.90
+  intent_f1_macro: 0.80
+  pipeline_latency_p95_ms: 100
+  false_positive_rate: 0.05
+  fairness_fpr_disparity: 0.05
+  calibration_ece: 0.05
+  inter_annotator_kappa: 0.80
