@@ -65,10 +65,18 @@ def download_competition(competition: str, dest: Path, files: list[str]):
 
     print(f"  Downloading {competition}...")
     try:
-        # Use the kaggle.exe directly from the venv Scripts directory
-        kaggle_exe = str(Path(sys.executable).parent / "kaggle.exe")
+        # Detect the correct kaggle executable (Linux vs Windows)
+        bin_dir = Path(sys.executable).parent
+        kaggle_exe = bin_dir / "kaggle"
+        if not kaggle_exe.exists():
+            kaggle_exe = bin_dir / "kaggle.exe"
+            
+        if not kaggle_exe.exists():
+            # Fallback to system path if not in venv
+            kaggle_exe = "kaggle"
+
         result = subprocess.run(
-            [kaggle_exe, "competitions", "download",
+            [str(kaggle_exe), "competitions", "download",
              "-c", competition, "-p", str(dest)],
             capture_output=True, text=True
         )

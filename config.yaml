@@ -11,6 +11,7 @@ hardware:
   device: "cuda"              # "cuda" | "cpu"
   gpu_vram_gb: 24             # RTX 4090 Server
   fp16: true                  # mixed precision training
+  flash_attention: true       # Turbocharge for 4090
 
 # --- Model ---
 model:

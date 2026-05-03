@@ -117,6 +117,9 @@ def train(
     # --- Model ---
     alpha = cfg["training"]["alpha"] if task != "intent_only" else 0.0
     beta = cfg["training"]["beta"] if task != "toxicity_only" else 0.0
+    
+    attn_impl = "sdpa"  # Using PyTorch 2.5 native Flash Attention (no install needed!)
+    print("⚡ PyTorch Native Flash Attention (SDPA) activated!")
 
     model = ContentModerationModel(
         encoder_name=cfg["model"]["encoder"],
@@ -125,6 +128,7 @@ def train(
         beta=beta,
         focal_gamma=cfg["training"]["focal_loss_gamma"],
         focal_alpha=cfg["training"]["focal_loss_alpha"],
+        attn_implementation=attn_impl
     )
 
     # --- Model & Resume Logic ---

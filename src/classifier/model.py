@@ -46,13 +46,18 @@ class ContentModerationModel(nn.Module):
         beta: float = 0.5,      # intent loss weight
         focal_gamma: float = 2.0,
         focal_alpha: float = 0.25,
+        attn_implementation: str = "eager",
     ):
         super().__init__()
         self.alpha = alpha
         self.beta = beta
 
         config = AutoConfig.from_pretrained(encoder_name)
-        self.encoder = AutoModel.from_pretrained(encoder_name, config=config)
+        self.encoder = AutoModel.from_pretrained(
+            encoder_name, 
+            config=config, 
+            attn_implementation=attn_implementation
+        )
         hidden = config.hidden_size  # 768 for ModernBERT-base
 
         self.dropout = nn.Dropout(dropout)
