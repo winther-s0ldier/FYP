@@ -39,8 +39,8 @@ class FocalLoss(nn.Module):
 class ContentModerationModel(nn.Module):
     def __init__(
         self,
-        encoder_name: str = "answerdotai/ModernBERT-base",
-        n_intents: int = 20,
+        encoder_name: str = "answerdotai/ModernBERT-large",
+        n_intents: int = 21,
         dropout: float = 0.1,
         alpha: float = 0.5,     # toxicity loss weight
         beta: float = 0.5,      # intent loss weight
@@ -58,7 +58,7 @@ class ContentModerationModel(nn.Module):
             config=config, 
             attn_implementation=attn_implementation
         )
-        hidden = config.hidden_size  # 768 for ModernBERT-base
+        hidden = config.hidden_size  # 1024 for ModernBERT-large
 
         self.dropout = nn.Dropout(dropout)
 

@@ -1,5 +1,6 @@
 """
 Dataset loading and preprocessing for toxicity + intent classification.
+Phase 2: Supports all 7 training sources + harmonization to 20-label taxonomy.
 """
 import pandas as pd
 import numpy as np
@@ -16,12 +17,18 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
-# Load intent label → index mapping from config
+# ---------------------------------------------------------------------------
+# Intent label mappings (6 behavioural clusters, 20 labels)
+# ---------------------------------------------------------------------------
 def get_intent_labels() -> list[str]:
+    """Read intent labels from config.yaml across all 6 clusters."""
     cfg = load_config()
     labels = []
-    for tier in ("benign", "suspicious", "malicious"):
-        labels.extend(cfg["intents"][tier])
+    for cluster in (
+        "neutral_benign", "social_bonding", "passive_aggression",
+        "active_aggression", "manipulation", "evasion",
+    ):
+        labels.extend(cfg["intents"][cluster])
     return labels
 
 
@@ -73,6 +80,10 @@ class ModerationDataset(Dataset):
         return item
 
 
+# ===========================================================================
+# Dataset Loaders — Phase 1 (Toxicity)
+# ===========================================================================
+
 def load_jigsaw_2018(path: Path) -> pd.DataFrame:
     """Load Jigsaw 2018, keep text + binary toxic label."""
     df = pd.read_csv(path / "train.csv")
@@ -93,7 +104,6 @@ def load_jigsaw_2019(path: Path, sample: Optional[int] = 500_000) -> pd.DataFram
                          "hispanic", "christian", "jewish", "muslim",
                          "psychiatric", "physical_disability"]
     )]
-    # Rename comment_text to text to match expected schema
     df = df.rename(columns={"comment_text": "text"})
     keep = ["text", "toxic"] + [c for c in demo_cols if c in df.columns]
     return df[keep]
@@ -108,7 +118,6 @@ def load_hateval(path: Path) -> pd.DataFrame:
         df["toxic"] = df["label"].astype(int)
         return df[["text", "toxic"]]
     except Exception:
-        # Fallback: try loading raw CSV if HF dataset not available
         csv = path / "train.csv"
         if csv.exists():
             df = pd.read_csv(csv)
@@ -117,6 +126,230 @@ def load_hateval(path: Path) -> pd.DataFrame:
     return pd.DataFrame(columns=["text", "toxic"])
 
 
+# ===========================================================================
+# Dataset Loaders — Phase 2 (Toxicity — New Sources)
+# ===========================================================================
+
+def load_metahate(path: Path, sample: Optional[int] = 500_000) -> pd.DataFrame:
+    """
+    Load MetaHate (1.7M rows, TSV: label + text).
+    Harmonizes 36 social-media hate speech datasets.
+    """
+    tsv = path / "available_metahate.tsv"
+    if not tsv.exists():
+        return pd.DataFrame(columns=["text", "toxic"])
+
+    df = pd.read_csv(tsv, sep="\t", on_bad_lines="skip", engine="python")
+    # Columns: label (0/1), text
+    df = df.rename(columns={"label": "toxic"})
+    df["toxic"] = df["toxic"].astype(int)
+    df = df[["text", "toxic"]].dropna(subset=["text"])
+
+    if sample and len(df) > sample:
+        df = df.sample(n=sample, random_state=42)
+
+    return df
+
+
+def load_toxigen(path: Path) -> pd.DataFrame:
+    """
+    Load ToxiGen (implicit/adversarial toxicity).
+    Used in Stage 2 curriculum for sarcasm/microaggression hardening.
+    """
+    train_csv = path / "annotated_train.csv"
+    if not train_csv.exists():
+        return pd.DataFrame(columns=["text", "toxic"])
+
+    df = pd.read_csv(train_csv)
+    # label column: "hate" / "neutral"
+    df["toxic"] = (df["label"] == "hate").astype(int)
+    # Clean the text — ToxiGen has b'...' byte-string prefixes
+    df["text"] = df["text"].str.replace(r"^b'|'$", "", regex=True)
+    df = df[["text", "toxic"]].dropna(subset=["text"])
+
+    # Also load test set (if it has a 'label' column)
+    test_csv = path / "annotated_test.csv"
+    if test_csv.exists():
+        df_test = pd.read_csv(test_csv)
+        if "label" in df_test.columns:
+            df_test["toxic"] = (df_test["label"] == "hate").astype(int)
+            df_test["text"] = df_test["text"].str.replace(r"^b'|'$", "", regex=True)
+            df_test = df_test[["text", "toxic"]].dropna(subset=["text"])
+            df = pd.concat([df, df_test], ignore_index=True)
+        elif "toxicity_human" in df_test.columns:
+            # Fallback: use human toxicity score (1-5 scale, >= 3 = toxic)
+            df_test["toxic"] = (df_test["toxicity_human"] >= 3).astype(int)
+            df_test["text"] = df_test["text"].str.replace(r"^b'|'$", "", regex=True)
+            df_test = df_test[["text", "toxic"]].dropna(subset=["text"])
+            df = pd.concat([df, df_test], ignore_index=True)
+
+    return df
+
+
+def load_civil_comments(path: Path, sample: Optional[int] = 500_000) -> pd.DataFrame:
+    """
+    Load Civil Comments (Parquet, continuous toxicity score).
+    Large-scale diverse domain data for Stage 1 foundation.
+    """
+    parquet_files = sorted(path.glob("train-*.parquet"))
+    if not parquet_files:
+        return pd.DataFrame(columns=["text", "toxic"])
+
+    dfs = [pd.read_parquet(f) for f in parquet_files]
+    df = pd.concat(dfs, ignore_index=True)
+
+    # Binarize toxicity score at 0.5 threshold (same as Jigsaw)
+    df["toxic"] = (df["toxicity"] >= 0.5).astype(int)
+    df = df[["text", "toxic"]].dropna(subset=["text"])
+
+    if sample and len(df) > sample:
+        df = df.sample(n=sample, random_state=42)
+
+    return df
+
+
+# ===========================================================================
+# Dataset Loaders — Phase 2 (Intent Pre-training)
+# ===========================================================================
+
+# Mapping from Banking77/CLINC150 labels → our 20-label taxonomy
+BANKING77_INTENT_MAP = {
+    # Most banking queries map to "question" or "information_sharing"
+    "default": "question",
+}
+
+CLINC150_INTENT_MAP = {
+    # CLINC150 benign intents → our benign cluster
+    "greeting": "greeting",
+    "goodbye": "greeting",         # farewell maps to greeting cluster
+    "thanks": "feedback",
+    "yes": "small_talk",
+    "no": "small_talk",
+    "oos": "question",             # out-of-scope → question (safe default)
+    "default": "question",
+}
+
+DAILY_DIALOG_INTENT_MAP = {
+    # DeepPavlov/daily_dialog act_label_text values
+    "inform": "information_sharing",
+    "question": "question",
+    "directive": "feedback",
+    "commissive": "solidarity_seeking",
+}
+
+
+def load_banking77(path: Path) -> pd.DataFrame:
+    """
+    Load Banking77 (13k customer service intents).
+    Teaches geometric separation of similar utterances.
+    All samples are benign (toxic=0).
+    """
+    try:
+        from datasets import load_from_disk
+        ds = load_from_disk(str(path))
+        df = ds["train"].to_pandas()
+    except Exception:
+        csv = path / "train.csv"
+        if csv.exists():
+            df = pd.read_csv(csv)
+        else:
+            return pd.DataFrame(columns=["text", "toxic", "intent"])
+
+    df["toxic"] = 0
+    df["intent"] = df.get("label", "").apply(
+        lambda x: BANKING77_INTENT_MAP.get(str(x), "question")
+    )
+    if "text" not in df.columns:
+        # Banking77 uses 'text' or 'label' columns depending on source
+        text_col = [c for c in df.columns if c not in ("label", "toxic", "intent")][0]
+        df = df.rename(columns={text_col: "text"})
+
+    return df[["text", "toxic", "intent"]].dropna(subset=["text"])
+
+
+def load_clinc150(path: Path) -> pd.DataFrame:
+    """
+    Load CLINC150 (23k intent classification, 150 intents + OOS).
+    Filtered to benign subset only — teaches OOS detection.
+    All samples are benign (toxic=0).
+    """
+    try:
+        from datasets import load_from_disk
+        ds = load_from_disk(str(path))
+        df = ds["train"].to_pandas()
+    except Exception:
+        csv = path / "train.csv"
+        if csv.exists():
+            df = pd.read_csv(csv)
+        else:
+            return pd.DataFrame(columns=["text", "toxic", "intent"])
+
+    df["toxic"] = 0
+    # Map CLINC150 intent names to our taxonomy
+    if "intent" in df.columns:
+        df["intent"] = df["intent"].apply(
+            lambda x: CLINC150_INTENT_MAP.get(str(x), "question")
+        )
+    else:
+        df["intent"] = "question"
+
+    if "text" not in df.columns:
+        text_col = [c for c in df.columns if c not in ("intent", "label", "toxic")][0]
+        df = df.rename(columns={text_col: "text"})
+
+    return df[["text", "toxic", "intent"]].dropna(subset=["text"])
+
+
+def load_daily_dialog(path: Path) -> pd.DataFrame:
+    """
+    Load DailyDialog (87k utterances from DeepPavlov/daily_dialog).
+    Domain Bridge: transitions from formal to informal register.
+    Columns: dialog (list[str]), act_label_text, emotion_label_text.
+    All samples are benign (toxic=0).
+    """
+    try:
+        from datasets import load_from_disk
+        ds = load_from_disk(str(path))
+        df = ds["train"].to_pandas()
+    except Exception:
+        return pd.DataFrame(columns=["text", "toxic", "intent"])
+
+    # Each row has dialog (list of utterances) and act_label_text
+    # Flatten: one row per utterance
+    rows = []
+    for _, row in df.iterrows():
+        utterances = row["dialog"] if isinstance(row["dialog"], list) else [row["dialog"]]
+        act = row.get("act_label_text", "inform")
+        intent = DAILY_DIALOG_INTENT_MAP.get(act, "small_talk")
+        for utt in utterances:
+            text = str(utt).strip()
+            if text:
+                rows.append({"text": text, "toxic": 0, "intent": intent})
+
+    return pd.DataFrame(rows)[["text", "toxic", "intent"]].dropna(subset=["text"])
+
+
+# ===========================================================================
+# Harmonization: Assign intent labels to toxicity-only datasets
+# ===========================================================================
+
+def assign_default_intents(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Assign default intent labels to toxicity-only datasets.
+    Toxic → 'direct_attack' (most common explicit toxicity pattern).
+    Non-toxic → 'question' (safe default, to be refined by intent datasets).
+    """
+    if "intent" not in df.columns:
+        df["intent"] = df["toxic"].map(
+            lambda t: "direct_attack" if t else "question"
+        )
+    return df
+
+
+# ===========================================================================
+# Build Dataset (Phase 2 — Curriculum-Aware)
+# ===========================================================================
+
 def build_train_dataset(
     tokenizer: AutoTokenizer,
     data_dir: Path = Path("data/raw"),
@@ -124,30 +357,101 @@ def build_train_dataset(
     val_ratio: float = 0.15,
     test_ratio: float = 0.15,
     seed: int = 42,
+    stage: int = 1,   # 1 = Explicit Foundation, 2 = add Implicit/Adversarial
 ) -> tuple[ModerationDataset, ModerationDataset, ModerationDataset]:
-    """Load, merge, split, return (train, val, test) datasets."""
+    """
+    Load, merge, split, return (train, val, test) datasets.
+
+    Stage 1: MetaHate + Jigsaw 2018/2019 + Civil Comments + Intent pre-training
+    Stage 2: Stage 1 + ToxiGen + Session Data (implicit/adversarial hardening)
+    """
     dfs = []
 
+    # --- Stage 1: Explicit Foundation ---
+
+    # Toxicity datasets
     jigsaw_2018 = data_dir / "jigsaw_2018"
     if (jigsaw_2018 / "train.csv").exists():
         df = load_jigsaw_2018(jigsaw_2018)
         df["source"] = "jigsaw_2018"
         dfs.append(df)
-        print(f"Loaded Jigsaw 2018: {len(df):,} rows")
+        print(f"  Loaded Jigsaw 2018: {len(df):,} rows")
 
     jigsaw_2019 = data_dir / "jigsaw_2019"
     if (jigsaw_2019 / "train.csv").exists():
         df = load_jigsaw_2019(jigsaw_2019)
         df["source"] = "jigsaw_2019"
         dfs.append(df)
-        print(f"Loaded Jigsaw 2019: {len(df):,} rows")
+        print(f"  Loaded Jigsaw 2019: {len(df):,} rows")
 
     hateval = data_dir / "hateval"
     if hateval.exists():
         df = load_hateval(hateval)
-        df["source"] = "hateval"
-        dfs.append(df)
-        print(f"Loaded HatEval: {len(df):,} rows")
+        if len(df) > 0:
+            df["source"] = "hateval"
+            dfs.append(df)
+            print(f"  Loaded HatEval: {len(df):,} rows")
+
+    metahate = data_dir / "metahate"
+    if metahate.exists():
+        df = load_metahate(metahate)
+        if len(df) > 0:
+            df["source"] = "metahate"
+            dfs.append(df)
+            print(f"  Loaded MetaHate: {len(df):,} rows")
+
+    civil = data_dir / "civil_comments"
+    if civil.exists():
+        df = load_civil_comments(civil)
+        if len(df) > 0:
+            df["source"] = "civil_comments"
+            dfs.append(df)
+            print(f"  Loaded Civil Comments: {len(df):,} rows")
+
+    # Intent pre-training datasets (all benign, carry their own intent labels)
+    banking = data_dir / "banking77"
+    if banking.exists():
+        df = load_banking77(banking)
+        if len(df) > 0:
+            df["source"] = "banking77"
+            dfs.append(df)
+            print(f"  Loaded Banking77: {len(df):,} rows")
+
+    clinc = data_dir / "clinc150"
+    if clinc.exists():
+        df = load_clinc150(clinc)
+        if len(df) > 0:
+            df["source"] = "clinc150"
+            dfs.append(df)
+            print(f"  Loaded CLINC150: {len(df):,} rows")
+
+    daily = data_dir / "daily_dialog"
+    if daily.exists():
+        df = load_daily_dialog(daily)
+        if len(df) > 0:
+            df["source"] = "daily_dialog"
+            dfs.append(df)
+            print(f"  Loaded DailyDialog: {len(df):,} rows")
+
+    # --- Stage 2: Implicit & Adversarial ---
+    if stage >= 2:
+        toxigen = data_dir / "toxigen"
+        if toxigen.exists():
+            df = load_toxigen(toxigen)
+            if len(df) > 0:
+                df["source"] = "toxigen"
+                dfs.append(df)
+                print(f"  Loaded ToxiGen (Stage 2): {len(df):,} rows")
+
+        # Session data (self-annotated, if available)
+        session_dir = data_dir / "session_data"
+        if session_dir.exists():
+            for csv_file in session_dir.glob("*.csv"):
+                df = pd.read_csv(csv_file)
+                if "text" in df.columns and "toxic" in df.columns:
+                    df["source"] = "session_data"
+                    dfs.append(df)
+                    print(f"  Loaded Session Data ({csv_file.name}): {len(df):,} rows")
 
     if not dfs:
         raise FileNotFoundError(
@@ -156,11 +460,15 @@ def build_train_dataset(
 
     combined = pd.concat(dfs, ignore_index=True)
 
-    # Add placeholder intent label for toxicity-only rows (to be overwritten by custom data)
-    if "intent" not in combined.columns:
-        combined["intent"] = combined["toxic"].map(
-            lambda t: "threat" if t else "question"
-        )
+    # Assign default intents to toxicity-only rows
+    combined = assign_default_intents(combined)
+
+    # Validate intent labels — warn about unmapped labels
+    valid_intents = set(INTENT2IDX.keys())
+    unknown = set(combined["intent"].unique()) - valid_intents
+    if unknown:
+        print(f"  WARNING: {len(unknown)} unknown intent labels found, defaulting to 'question': {unknown}")
+        combined.loc[~combined["intent"].isin(valid_intents), "intent"] = "question"
 
     # Stratified split
     from sklearn.model_selection import train_test_split
@@ -172,8 +480,15 @@ def build_train_dataset(
         train_val, test_size=val_size, stratify=train_val["toxic"], random_state=seed
     )
 
-    print(f"\nSplit: train={len(train):,} | val={len(val):,} | test={len(test):,}")
-    print(f"Toxic ratio — train: {train['toxic'].mean():.3f} | val: {val['toxic'].mean():.3f}")
+    print(f"\n  Split: train={len(train):,} | val={len(val):,} | test={len(test):,}")
+    print(f"  Toxic ratio — train: {train['toxic'].mean():.3f} | val: {val['toxic'].mean():.3f}")
+
+    # Intent distribution summary
+    print(f"\n  Intent distribution (train):")
+    for intent, count in train["intent"].value_counts().head(10).items():
+        print(f"    {intent}: {count:,} ({100*count/len(train):.1f}%)")
+    if len(train["intent"].unique()) > 10:
+        print(f"    ... and {len(train['intent'].unique()) - 10} more labels")
 
     return (
         ModerationDataset(train, tokenizer, max_length),

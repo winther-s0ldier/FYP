@@ -1,11 +1,19 @@
 """
-Download all required datasets from Kaggle.
+Download all required datasets for Phase 1 + Phase 2 training.
 Run from project root: python scripts/download_datasets.py
 
-Datasets downloaded:
+Phase 1 (Kaggle):
   - Jigsaw Toxic Comments 2018 (160K)
   - Jigsaw Unintended Bias 2019 (1.8M)
+
+Phase 2 (HuggingFace):
   - HatEval SemEval 2019 (13K tweets)
+  - ToxiGen (274K implicit hate)             — already downloaded
+  - Civil Comments (1.8M)                    — already downloaded
+  - MetaHate (1.7M)                          — already downloaded
+  - Banking77 (13K intent classification)    — NEW
+  - CLINC150 (23K intent + OOS detection)    — NEW
+  - DailyDialog (13K dialog acts)            — NEW
 """
 import os
 import sys
@@ -34,9 +42,14 @@ DATASETS = [
     },
 ]
 
-# HatEval is part of tweet_eval
+# HuggingFace datasets (Phase 1 + Phase 2)
 HUGGINGFACE_DATASETS = [
+    # Phase 1
     {"hf_id": "tweet_eval", "config": "hate", "dest": RAW_DIR / "hateval"},
+    # Phase 2 — Intent Pre-training (fixes Question Bias)
+    {"hf_id": "legacy-datasets/banking77", "config": None, "dest": RAW_DIR / "banking77"},
+    {"hf_id": "clinc_oos", "config": "plus", "dest": RAW_DIR / "clinc150"},
+    {"hf_id": "DeepPavlov/daily_dialog", "config": None, "dest": RAW_DIR / "daily_dialog"},
 ]
 
 
@@ -118,27 +131,46 @@ def download_huggingface(hf_id: str, dest: Path, config: str = None):
 
 
 def verify_downloads():
-    print("\nVerification:")
+    print("\n" + "=" * 60)
+    print("Verification")
+    print("=" * 60)
     all_ok = True
-    checks = [
-        (RAW_DIR / "jigsaw_2018" / "train.csv", "Jigsaw 2018 train"),
-        (RAW_DIR / "jigsaw_2019" / "train.csv", "Jigsaw 2019 train"),
-        (RAW_DIR / "hateval", "HatEval"),
+
+    # File-based checks (CSVs)
+    file_checks = [
+        (RAW_DIR / "jigsaw_2018" / "train.csv", "Jigsaw 2018"),
+        (RAW_DIR / "jigsaw_2019" / "train.csv", "Jigsaw 2019"),
+        (RAW_DIR / "metahate" / "available_metahate.tsv", "MetaHate"),
     ]
-    for path, name in checks:
-        if path.name == "hateval":
-            status = "OK" if path.exists() and any(path.iterdir()) else "X MISSING"
-        else:
-            status = "OK" if path.exists() else "X MISSING"
+    for path, name in file_checks:
+        status = "OK" if path.exists() else "MISSING"
         print(f"  [{status}] {name}: {path}")
         if not path.exists():
             all_ok = False
 
+    # Directory-based checks (HF datasets / parquet)
+    dir_checks = [
+        (RAW_DIR / "hateval", "HatEval"),
+        (RAW_DIR / "toxigen", "ToxiGen"),
+        (RAW_DIR / "civil_comments", "Civil Comments"),
+        (RAW_DIR / "banking77", "Banking77"),
+        (RAW_DIR / "clinc150", "CLINC150"),
+        (RAW_DIR / "daily_dialog", "DailyDialog"),
+    ]
+    for path, name in dir_checks:
+        exists = path.exists() and any(path.iterdir()) if path.exists() else False
+        status = "OK" if exists else "MISSING"
+        print(f"  [{status}] {name}: {path}")
+        if not exists:
+            all_ok = False
+
     if not all_ok:
         print("\nSome datasets are missing. Check errors above.")
-        print("You can also download manually from Kaggle and place CSVs in data/raw/")
+        print("You can also download manually and place files in data/raw/")
     else:
-        print("\nAll datasets ready. Next: python scripts/preprocess.py")
+        print("\nAll datasets ready!")
+        print("  Stage 1: python -m src.classifier.train --stage 1")
+        print("  Stage 2: python -m src.classifier.train --stage 2")
 
 
 if __name__ == "__main__":

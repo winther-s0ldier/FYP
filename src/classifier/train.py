@@ -1,6 +1,7 @@
 """
-ModernBERT fine-tuning with LoRA (fits in 6GB VRAM).
-Supports multi-task (toxicity + intent) and single-task ablations.
+ModernBERT fine-tuning with LoRA (trained on RTX 4090 24GB VRAM).
+Supports multi-task (toxicity + intent), single-task ablations, and
+Phase 2 curriculum training (--stage 1 / --stage 2).
 """
 import os
 import torch
@@ -82,12 +83,15 @@ def evaluate(model, loader, device) -> dict:
 def train(
     task: str = "multitask",       # "multitask" | "toxicity_only" | "intent_only"
     use_lora: bool = True,
+    full_ft: bool = False,         # Full fine-tuning (all params)
+    stage: int = 1,                # Curriculum stage: 1=Explicit, 2=Implicit
     run_name: str | None = None,
     checkpoint_dir: Path = Path("models/checkpoints"),
 ):
     cfg = load_config()
     device = torch.device(cfg["hardware"]["device"] if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
+    print(f"Curriculum Stage: {stage}")
     torch.manual_seed(cfg["training"]["seed"])
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +99,7 @@ def train(
     # --- Tokeniser ---
     tokenizer = AutoTokenizer.from_pretrained(cfg["model"]["encoder"])
 
-    # --- Data ---
+    # --- Data (curriculum-aware) ---
     n_intents = len(INTENT_LABELS)
     train_ds, val_ds, _ = build_train_dataset(
         tokenizer,
@@ -103,6 +107,7 @@ def train(
         val_ratio=cfg["data"]["val_ratio"],
         test_ratio=cfg["data"]["test_ratio"],
         seed=cfg["training"]["seed"],
+        stage=stage,
     )
 
     train_loader = DataLoader(
@@ -134,7 +139,7 @@ def train(
     # --- Model & Resume Logic ---
     resume_path = checkpoint_dir / f"best_{task}"
     
-    if not args.full_ft and resume_path.exists():
+    if not full_ft and resume_path.exists():
         print(f"Resuming from existing checkpoint: {resume_path}")
         from peft import PeftModel
         model.encoder = PeftModel.from_pretrained(model.encoder, str(resume_path))
@@ -143,7 +148,7 @@ def train(
         model.intent_head.load_state_dict(heads_data["intent_head"])
         print("✓ Checkpoint loaded successfully.")
     else:
-        if use_lora and not args.full_ft:
+        if use_lora and not full_ft:
             model = apply_lora(model, cfg)
         else:
             print("🚀 FULL FINE-TUNING ENABLED: Training all 150M+ parameters.")
@@ -157,7 +162,7 @@ def train(
     # --- Optimiser ---
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=cfg["training"]["learning_rate"] if not args.full_ft else 5e-6, # Lower LR for Full FT
+        lr=cfg["training"]["learning_rate"] if not full_ft else 5e-6, # Lower LR for Full FT
         weight_decay=cfg["training"]["weight_decay"],
     )
     total_steps = len(train_loader) * cfg["training"]["epochs"]
@@ -248,11 +253,19 @@ def train(
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Phase 2 Curriculum Training")
     parser.add_argument("--task", default="multitask",
                         choices=["multitask", "toxicity_only", "intent_only"])
+    parser.add_argument("--stage", type=int, default=1, choices=[1, 2],
+                        help="Curriculum stage: 1=Explicit Foundation, 2=Implicit/Adversarial")
     parser.add_argument("--no-lora", action="store_true")
     parser.add_argument("--full-ft", action="store_true", help="Enable Full Fine-Tuning")
     parser.add_argument("--run-name", default=None)
     args = parser.parse_args()
-    train(task=args.task, use_lora=not args.no_lora, run_name=args.run_name)
+    train(
+        task=args.task,
+        use_lora=not args.no_lora,
+        full_ft=args.full_ft,
+        stage=args.stage,
+        run_name=args.run_name,
+    )

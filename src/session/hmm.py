@@ -11,7 +11,7 @@ from hmmlearn import hmm
 from src.classifier.dataset import INTENT_LABELS
 
 
-# Intent states: all 20 labels + "uncertain" (for low-confidence BERT predictions)
+# Intent states: all intent labels + "uncertain" (for low-confidence BERT predictions)
 ALL_STATES = INTENT_LABELS + ["uncertain"]
 STATE2IDX = {s: i for i, s in enumerate(ALL_STATES)}
 IDX2STATE = {i: s for s, i in STATE2IDX.items()}

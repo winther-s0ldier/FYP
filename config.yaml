@@ -1,65 +1,79 @@
 # =============================================================================
-# Project Configuration
+# Project Configuration — Phase 2 (Updated 2026-05-06)
 # =============================================================================
 
 project:
   name: "real-time-content-moderation"
-  version: "0.1.0"
+  version: "0.2.0"
 
-# --- Hardware ---
+# --- Hardware (RTX 4090 — 24GB VRAM) ---
 hardware:
-  device: "cuda"              # "cuda" | "cpu"
-  gpu_vram_gb: 24             # RTX 4090 Server
-  fp16: true                  # mixed precision training
-  flash_attention: true       # Turbocharge for 4090
+  device: "cuda"
+  gpu_vram_gb: 24
+  fp16: true
+  flash_attention: true        # 4090 supports Flash Attention natively
 
 # --- Model ---
 model:
   encoder: "answerdotai/ModernBERT-large"
-  init_from: "unitary/toxic-bert"   # start toxicity head from here
-  max_length: 512                   # reading range upgraded for 4090
-  hidden_size: 1024                 # Large model hidden size
+  max_length: 512              # Full context — 24GB VRAM allows it
+  hidden_size: 1024            # ModernBERT-large hidden size
 
-# --- Intent taxonomy ---
+# --- Intent Taxonomy (6 Behavioural Clusters, 20 Labels) ---
 intents:
-  benign:
+  neutral_benign:
     - greeting
     - question
-    - information_request
+    - information_sharing
     - small_talk
+  social_bonding:
+    - solidarity_seeking
+    - venting
+    - humour
     - feedback
-    - help_request
-    - joke
-    - farewell
-  suspicious:
-    - personal_probe
-    - repeated_contact
-    - boundary_testing
-    - unusual_urgency
-  malicious:
-    - threat
-    - harassment
-    - hate_speech
-    - grooming_signal
-    - doxxing_attempt
-    - coordinated_abuse
+  passive_aggression:
+    - baiting
+    - sarcasm
+    - passive_hostility
+    - irony
+  active_aggression:
+    - direct_attack
+    - threatening
+    - escalating_aggression
+  manipulation:
+    - gaslighting
+    - grooming
+    - social_engineering
+  evasion:
+    - topic_deflection
+    - denial
+    - identity_concealment
 
-# --- Training ---
+# --- Training (Phase 2 Optimised — 4090 24GB) ---
 training:
   epochs: 5
-  batch_size: 16              # Optimised for 24GB VRAM
-  gradient_accumulation_steps: 1  # No need for accumulation on a 4090
-  learning_rate: 1.0e-5       # Lower LR for Large model stability
+  batch_size: 32
+  gradient_accumulation_steps: 1   # No accumulation needed on 24GB
+  learning_rate: 5.0e-6            # Phase 2: slower to avoid memorization
   warmup_ratio: 0.1
-  weight_decay: 0.01
-  alpha: 0.5                  # toxicity loss weight (tuned via W&B)
-  beta: 0.5                   # intent loss weight
+  weight_decay: 0.05               # Phase 2: stronger regularization
+  alpha: 0.5                       # toxicity loss weight
+  beta: 0.5                        # intent loss weight
   focal_loss_gamma: 2.0
   focal_loss_alpha: 0.25
-  lora_r: 16
-  lora_alpha: 32
-  lora_dropout: 0.1
+  lora_r: 8                        # Phase 2: reduced rank for generalization
+  lora_alpha: 16                   # Keep ratio alpha/r = 2
+  lora_dropout: 0.15               # Phase 2: stronger dropout
   seed: 42
+
+# --- Curriculum stages ---
+curriculum:
+  stage_1:
+    datasets: ["metahate", "jigsaw_2018", "jigsaw_2019", "civil_comments", "banking77", "clinc150", "daily_dialog"]
+    description: "Explicit Foundation — learn toxicity boundaries + intent discrimination"
+  stage_2:
+    datasets: ["toxigen", "session_data"]
+    description: "Implicit & Adversarial — harden against sarcasm, microaggressions, escalation"
 
 # --- Data splits ---
 data:
@@ -80,17 +94,17 @@ pipeline:
 
 # --- HMM ---
 hmm:
-  n_iter: 100                 # Baum-Welch iterations
+  n_iter: 100
   tol: 1.0e-4
-  uncertain_state: true       # add "uncertain" state for low-conf BERT preds
+  uncertain_state: true
 
 # --- Escalation ---
 escalation:
-  provider: "groq"            # "groq" | "openai" | "anthropic"
+  provider: "groq"
   groq_model: "llama-3.3-70b-versatile"
   openai_model: "gpt-4o-mini"
   max_tokens: 512
-  temperature: 0.1            # low temp for structured JSON output
+  temperature: 0.1
 
 # --- Evaluation targets ---
 targets:
