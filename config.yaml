@@ -12,6 +12,7 @@ hardware:
   gpu_vram_gb: 24
   fp16: true
   flash_attention: true        # 4090 supports Flash Attention natively
+  num_workers: 4               # Kaggle T4 has 4 CPUs; set to 8 on 4090
 
 # --- Model ---
 model:
