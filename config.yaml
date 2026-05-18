@@ -54,9 +54,9 @@ intents:
 # --- Training (Kaggle T4 x2) ---
 # 4090 overrides: batch_size: 32, gradient_accumulation_steps: 1
 training:
-  epochs: 5
-  batch_size: 4                     # T4 15GB limit; effective batch = 4 * 2 GPUs * 4 accum = 32
-  gradient_accumulation_steps: 4    # keeps effective batch = 32, matching 4090 run
+  epochs: 2                     # Kaggle T4 session limit; resume for more epochs
+  batch_size: 16                    # T4 only uses 3.8GB/15GB at batch=4; 16 keeps ~10GB
+  gradient_accumulation_steps: 1    # effective batch = 16 * 2 GPUs = 32, same as before
   learning_rate: 5.0e-6            # Phase 2: slower to avoid memorization
   warmup_ratio: 0.1
   weight_decay: 0.05               # Phase 2: stronger regularization
