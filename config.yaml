@@ -6,18 +6,19 @@ project:
   name: "real-time-content-moderation"
   version: "0.2.0"
 
-# --- Hardware (RTX 4090 — 24GB VRAM) ---
+# --- Hardware (Kaggle T4 x2 — 15GB each) ---
+# 4090 overrides: gpu_vram_gb: 24, batch_size: 32, gradient_accumulation_steps: 1, max_length: 512, num_workers: 8
 hardware:
   device: "cuda"
-  gpu_vram_gb: 24
+  gpu_vram_gb: 15
   fp16: true
-  flash_attention: true        # 4090 supports Flash Attention natively
-  num_workers: 4               # Kaggle T4 has 4 CPUs; set to 8 on 4090
+  flash_attention: true
+  num_workers: 4               # T4 has 4 CPUs per GPU
 
 # --- Model ---
 model:
   encoder: "answerdotai/ModernBERT-large"
-  max_length: 512              # Full context — 24GB VRAM allows it
+  max_length: 256              # T4 limit; 4090: use 512
   hidden_size: 1024            # ModernBERT-large hidden size
 
 # --- Intent Taxonomy (6 Behavioural Clusters, 20 Labels) ---
@@ -50,11 +51,12 @@ intents:
     - denial
     - identity_concealment
 
-# --- Training (Phase 2 Optimised — 4090 24GB) ---
+# --- Training (Kaggle T4 x2) ---
+# 4090 overrides: batch_size: 32, gradient_accumulation_steps: 1
 training:
   epochs: 5
-  batch_size: 32
-  gradient_accumulation_steps: 1   # No accumulation needed on 24GB
+  batch_size: 4                     # T4 15GB limit; effective batch = 4 * 2 GPUs * 4 accum = 32
+  gradient_accumulation_steps: 4    # keeps effective batch = 32, matching 4090 run
   learning_rate: 5.0e-6            # Phase 2: slower to avoid memorization
   warmup_ratio: 0.1
   weight_decay: 0.05               # Phase 2: stronger regularization
