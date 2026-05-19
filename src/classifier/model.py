@@ -103,7 +103,13 @@ class ContentModerationModel(nn.Module):
         loss = None
         if toxicity_labels is not None and intent_labels is not None:
             tox_loss = self.focal_loss(toxicity_score, toxicity_labels.float())
-            int_loss = self.ce_loss(intent_logits, intent_labels)
+            # If entire batch has no real intent labels (-100), skip intent loss
+            # to avoid NaN from CrossEntropyLoss dividing over zero valid samples
+            valid_intent = (intent_labels != -100)
+            if valid_intent.any():
+                int_loss = self.ce_loss(intent_logits, intent_labels)
+            else:
+                int_loss = torch.zeros(1, device=tox_loss.device, dtype=tox_loss.dtype)
             loss = self.alpha * tox_loss + self.beta * int_loss
 
         return ModelOutput(
