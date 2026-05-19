@@ -109,7 +109,10 @@ class ContentModerationModel(nn.Module):
             if valid_intent.any():
                 int_loss = self.ce_loss(intent_logits, intent_labels)
             else:
-                int_loss = torch.zeros(1, device=tox_loss.device, dtype=tox_loss.dtype)
+                # Multiply by 0 instead of creating a detached zero tensor —
+                # keeps intent_logits in the computation graph so DDP doesn't
+                # complain about parameters with no gradient this step
+                int_loss = (intent_logits * 0.0).sum()
             loss = self.alpha * tox_loss + self.beta * int_loss
 
         return ModelOutput(
