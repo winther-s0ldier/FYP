@@ -50,6 +50,8 @@ HUGGINGFACE_DATASETS = [
     {"hf_id": "legacy-datasets/banking77", "config": None, "dest": RAW_DIR / "banking77"},
     {"hf_id": "clinc_oos", "config": "plus", "dest": RAW_DIR / "clinc150"},
     {"hf_id": "DeepPavlov/daily_dialog", "config": None, "dest": RAW_DIR / "daily_dialog"},
+    # Chat-domain toxicity + jailbreaking labels (social_engineering intent signal)
+    {"hf_id": "lmsys/toxic-chat", "config": "toxicchat0124", "dest": RAW_DIR / "toxic_chat"},
 ]
 
 
@@ -156,6 +158,7 @@ def verify_downloads():
         (RAW_DIR / "banking77", "Banking77"),
         (RAW_DIR / "clinc150", "CLINC150"),
         (RAW_DIR / "daily_dialog", "DailyDialog"),
+        (RAW_DIR / "toxic_chat", "Toxic-Chat"),
     ]
     for path, name in dir_checks:
         exists = path.exists() and any(path.iterdir()) if path.exists() else False

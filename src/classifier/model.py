@@ -47,6 +47,7 @@ class ContentModerationModel(nn.Module):
         focal_gamma: float = 2.0,
         focal_alpha: float = 0.25,
         attn_implementation: str = "eager",
+        intent_class_weights: Optional[torch.Tensor] = None,  # inverse-freq weights for CE loss
     ):
         super().__init__()
         self.alpha = alpha
@@ -80,7 +81,13 @@ class ContentModerationModel(nn.Module):
         )
 
         self.focal_loss = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
-        self.ce_loss = nn.CrossEntropyLoss(ignore_index=-100)
+        # intent_class_weights: tensor of shape (n_intents,) computed from training
+        # distribution. Inverse-frequency weighting corrects 1154:1 imbalance between
+        # "question" (54k rows) and rare classes like "identity_concealment" (47 rows).
+        self.ce_loss = nn.CrossEntropyLoss(
+            ignore_index=-100,
+            weight=intent_class_weights,  # None → uniform weights (backward-compatible)
+        )
 
     def forward(
         self,

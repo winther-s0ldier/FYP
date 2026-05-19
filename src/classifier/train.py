@@ -136,7 +136,7 @@ def train(
 
     # --- Data (curriculum-aware) ---
     n_intents = len(INTENT_LABELS)
-    train_ds, val_ds, _ = build_train_dataset(
+    train_ds, val_ds, _, intent_weights = build_train_dataset(
         tokenizer,
         max_length=cfg["model"]["max_length"],
         val_ratio=cfg["data"]["val_ratio"],
@@ -167,6 +167,7 @@ def train(
         focal_gamma=cfg["training"]["focal_loss_gamma"],
         focal_alpha=cfg["training"]["focal_loss_alpha"],
         attn_implementation="sdpa",
+        intent_class_weights=intent_weights,  # inverse-freq weights → fixes 1154:1 imbalance
     )
 
     # --- Model & Resume Logic ---
