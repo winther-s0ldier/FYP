@@ -75,7 +75,7 @@ curriculum:
     datasets: ["metahate", "jigsaw_2018", "jigsaw_2019", "civil_comments", "banking77", "clinc150", "daily_dialog"]
     description: "Explicit Foundation — learn toxicity boundaries + intent discrimination"
   stage_2:
-    datasets: ["toxigen", "session_data"]
+    datasets: ["toxigen"]
     description: "Implicit & Adversarial — harden against sarcasm, microaggressions, escalation"
 
 # --- Data splits ---
