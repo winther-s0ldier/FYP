@@ -80,7 +80,7 @@ class ContentModerationModel(nn.Module):
         )
 
         self.focal_loss = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
-        self.ce_loss = nn.CrossEntropyLoss()
+        self.ce_loss = nn.CrossEntropyLoss(ignore_index=-100)
 
     def forward(
         self,

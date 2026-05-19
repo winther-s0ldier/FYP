@@ -73,10 +73,15 @@ class ModerationDataset(Dataset):
         }
         if self.has_labels:
             item["toxicity_labels"] = torch.tensor(float(row["toxic"]))
-            item["intent_labels"] = torch.tensor(
-                INTENT2IDX.get(row.get("intent", "question"), INTENT2IDX["question"]),
-                dtype=torch.long,
-            )
+            # has_intent=False → -100 so CrossEntropyLoss(ignore_index=-100) skips it
+            has_intent = bool(row.get("has_intent", True))
+            if has_intent:
+                item["intent_labels"] = torch.tensor(
+                    INTENT2IDX.get(row.get("intent", "question"), INTENT2IDX["question"]),
+                    dtype=torch.long,
+                )
+            else:
+                item["intent_labels"] = torch.tensor(-100, dtype=torch.long)
         return item
 
 
@@ -264,7 +269,8 @@ def load_banking77(path: Path) -> pd.DataFrame:
         text_col = [c for c in df.columns if c not in ("label", "toxic", "intent")][0]
         df = df.rename(columns={text_col: "text"})
 
-    return df[["text", "toxic", "intent"]].dropna(subset=["text"])
+    df["has_intent"] = True
+    return df[["text", "toxic", "intent", "has_intent"]].dropna(subset=["text"])
 
 
 def load_clinc150(path: Path) -> pd.DataFrame:
@@ -297,7 +303,8 @@ def load_clinc150(path: Path) -> pd.DataFrame:
         text_col = [c for c in df.columns if c not in ("intent", "label", "toxic")][0]
         df = df.rename(columns={text_col: "text"})
 
-    return df[["text", "toxic", "intent"]].dropna(subset=["text"])
+    df["has_intent"] = True
+    return df[["text", "toxic", "intent", "has_intent"]].dropna(subset=["text"])
 
 
 def load_daily_dialog(path: Path) -> pd.DataFrame:
@@ -326,7 +333,9 @@ def load_daily_dialog(path: Path) -> pd.DataFrame:
             if text:
                 rows.append({"text": text, "toxic": 0, "intent": intent})
 
-    return pd.DataFrame(rows)[["text", "toxic", "intent"]].dropna(subset=["text"])
+    df_out = pd.DataFrame(rows)[["text", "toxic", "intent"]].dropna(subset=["text"])
+    df_out["has_intent"] = True
+    return df_out
 
 
 # ===========================================================================
@@ -335,14 +344,25 @@ def load_daily_dialog(path: Path) -> pd.DataFrame:
 
 def assign_default_intents(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Assign default intent labels to toxicity-only datasets.
-    Toxic → 'direct_attack' (most common explicit toxicity pattern).
-    Non-toxic → 'question' (safe default, to be refined by intent datasets).
+    Assign intent labels and has_intent flag after concatenation.
+    Rows with has_intent=False get intent_labels=-100 at collation time,
+    so CrossEntropyLoss(ignore_index=-100) skips them entirely.
+    Only Banking77 / CLINC150 / DailyDialog rows have has_intent=True.
     """
+    # Fill has_intent: rows from intent-labeled loaders have True; rest NaN → False
+    if "has_intent" not in df.columns:
+        df["has_intent"] = False
+    else:
+        df["has_intent"] = df["has_intent"].fillna(False).astype(bool)
+
+    # Fill missing intent strings (NaN from toxicity-only rows) with a placeholder
+    # These won't affect training because has_intent=False → label=-100
     if "intent" not in df.columns:
-        df["intent"] = df["toxic"].map(
-            lambda t: "direct_attack" if t else "question"
-        )
+        df["intent"] = "question"
+    else:
+        mask = df["intent"].isna()
+        df.loc[mask & (df["toxic"] == 1), "intent"] = "direct_attack"
+        df.loc[mask & (df["toxic"] == 0), "intent"] = "question"
     return df
 
 
@@ -484,11 +504,13 @@ def build_train_dataset(
     print(f"  Toxic ratio — train: {train['toxic'].mean():.3f} | val: {val['toxic'].mean():.3f}")
 
     # Intent distribution summary
-    print(f"\n  Intent distribution (train):")
-    for intent, count in train["intent"].value_counts().head(10).items():
-        print(f"    {intent}: {count:,} ({100*count/len(train):.1f}%)")
-    if len(train["intent"].unique()) > 10:
-        print(f"    ... and {len(train['intent'].unique()) - 10} more labels")
+    # Show intent distribution only for rows with real labels
+    intent_train = train[train["has_intent"] == True]
+    print(f"\n  Intent distribution (train, has_intent=True: {len(intent_train):,} rows):")
+    for intent, count in intent_train["intent"].value_counts().head(10).items():
+        print(f"    {intent}: {count:,} ({100*count/len(intent_train):.1f}%)")
+    if len(intent_train["intent"].unique()) > 10:
+        print(f"    ... and {len(intent_train['intent'].unique()) - 10} more labels")
 
     return (
         ModerationDataset(train, tokenizer, max_length),

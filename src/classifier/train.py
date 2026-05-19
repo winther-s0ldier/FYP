@@ -82,13 +82,21 @@ def evaluate(model, loader, accelerator: Accelerator) -> dict:
         all_intent_labels.extend(intent_label_g.cpu().numpy())
 
     tox_preds = (np.array(all_tox_scores) >= 0.5).astype(int)
+
+    # Filter out samples without real intent labels (intent_label == -100)
+    intent_labels_arr = np.array(all_intent_labels)
+    intent_preds_arr = np.array(all_intent_preds)
+    intent_mask = intent_labels_arr != -100
+    intent_f1 = f1_score(
+        intent_labels_arr[intent_mask], intent_preds_arr[intent_mask],
+        average="macro", zero_division=0,
+    ) if intent_mask.any() else 0.0
+
     return {
         "loss": total_loss / len(loader),
         "toxicity_f1": f1_score(all_tox_labels, tox_preds, zero_division=0),
         "toxicity_auc": roc_auc_score(all_tox_labels, all_tox_scores),
-        "intent_f1_macro": f1_score(
-            all_intent_labels, all_intent_preds, average="macro", zero_division=0
-        ),
+        "intent_f1_macro": intent_f1,
     }
 
 
