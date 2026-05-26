@@ -1,6 +1,12 @@
 """
 ModernBERT multi-task model.
 Shared encoder → toxicity head (sigmoid) + intent head (softmax).
+
+Optimizations (2025-2026):
+  - Mean pooling (default) — CLS has no pre-training signal in ModernBERT
+  - Label smoothing 0.1 — prevents overconfident predictions, improves ECE
+  - Focal loss for toxicity — handles class imbalance (10% toxic)
+  - Weighted CE for intent — handles 1154:1 class imbalance
 """
 import torch
 import torch.nn as nn
@@ -16,7 +22,7 @@ class ModelOutput:
     toxicity_confidence: torch.Tensor   # (batch,) how far from 0.5
     intent_confidence: torch.Tensor     # (batch,) max softmax probability
     confidence: torch.Tensor            # (batch,) min(tox_conf, intent_conf)
-    embedding: torch.Tensor             # (batch, 768) CLS embedding
+    embedding: torch.Tensor             # (batch, hidden) pooled representation
     loss: Optional[torch.Tensor] = None
 
 
@@ -47,16 +53,19 @@ class ContentModerationModel(nn.Module):
         focal_gamma: float = 2.0,
         focal_alpha: float = 0.25,
         attn_implementation: str = "eager",
-        intent_class_weights: Optional[torch.Tensor] = None,  # inverse-freq weights for CE loss
+        intent_class_weights: Optional[torch.Tensor] = None,
+        pooling: str = "mean",          # "mean" (recommended) or "cls"
+        label_smoothing: float = 0.0,   # 0.1 recommended for calibration
     ):
         super().__init__()
         self.alpha = alpha
         self.beta = beta
+        self.pooling = pooling
 
         config = AutoConfig.from_pretrained(encoder_name)
         self.encoder = AutoModel.from_pretrained(
-            encoder_name, 
-            config=config, 
+            encoder_name,
+            config=config,
             attn_implementation=attn_implementation
         )
         hidden = config.hidden_size  # 1024 for ModernBERT-large
@@ -81,13 +90,31 @@ class ContentModerationModel(nn.Module):
         )
 
         self.focal_loss = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
-        # intent_class_weights: tensor of shape (n_intents,) computed from training
-        # distribution. Inverse-frequency weighting corrects 1154:1 imbalance between
-        # "question" (54k rows) and rare classes like "identity_concealment" (47 rows).
+        # Weighted CE with label smoothing for intent classification.
+        # Label smoothing redistributes 0.1 of probability mass from the ground-truth
+        # class to all other classes, preventing overconfident predictions.
+        # This improves Expected Calibration Error (ECE) which is critical for
+        # confidence threshold routing in the pipeline.
         self.ce_loss = nn.CrossEntropyLoss(
             ignore_index=-100,
-            weight=intent_class_weights,  # None → uniform weights (backward-compatible)
+            weight=intent_class_weights,
+            label_smoothing=label_smoothing,
         )
+
+    def _mean_pool(
+        self, hidden_states: torch.Tensor, attention_mask: torch.Tensor
+    ) -> torch.Tensor:
+        """Attention-weighted mean pooling over non-padded tokens.
+
+        Better than CLS for ModernBERT because:
+        1. ModernBERT has no [CLS] pre-training objective (unlike BERT)
+        2. Mean pooling aggregates information across all tokens
+        3. Empirically +2-4% on classification tasks (Reimers & Gurevych, 2019)
+        """
+        mask = attention_mask.unsqueeze(-1).float()       # (B, L, 1)
+        summed = (hidden_states * mask).sum(dim=1)        # (B, H)
+        counts = mask.sum(dim=1).clamp(min=1e-9)          # (B, 1)
+        return summed / counts                            # (B, H)
 
     def forward(
         self,
@@ -97,12 +124,19 @@ class ContentModerationModel(nn.Module):
         intent_labels: Optional[torch.Tensor] = None,
     ) -> ModelOutput:
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
-        cls = self.dropout(outputs.last_hidden_state[:, 0, :])  # [CLS] token
 
-        toxicity_score = self.toxicity_head(cls).squeeze(-1)    # (batch,)
-        intent_logits = self.intent_head(cls)                    # (batch, n_intents)
+        # Pooling strategy
+        if self.pooling == "mean":
+            pooled = self._mean_pool(outputs.last_hidden_state, attention_mask)
+        else:
+            pooled = outputs.last_hidden_state[:, 0, :]   # [CLS] fallback
 
-        # Confidence computation (see FYP.md §3 — Confidence Threshold Routing)
+        pooled = self.dropout(pooled)
+
+        toxicity_score = self.toxicity_head(pooled).squeeze(-1)   # (batch,)
+        intent_logits = self.intent_head(pooled)                   # (batch, n_intents)
+
+        # Confidence computation (see FYP.md S3 - Confidence Threshold Routing)
         tox_conf = (toxicity_score - 0.5).abs() * 2             # 0=uncertain, 1=certain
         intent_conf = intent_logits.softmax(-1).max(-1).values  # max softmax prob
         confidence = torch.minimum(tox_conf, intent_conf)       # most conservative
@@ -116,7 +150,7 @@ class ContentModerationModel(nn.Module):
             if valid_intent.any():
                 int_loss = self.ce_loss(intent_logits, intent_labels)
             else:
-                # Multiply by 0 instead of creating a detached zero tensor —
+                # Multiply by 0 instead of creating a detached zero tensor -
                 # keeps intent_logits in the computation graph so DDP doesn't
                 # complain about parameters with no gradient this step
                 int_loss = (intent_logits * 0.0).sum()
@@ -128,7 +162,7 @@ class ContentModerationModel(nn.Module):
             toxicity_confidence=tox_conf,
             intent_confidence=intent_conf,
             confidence=confidence,
-            embedding=cls,
+            embedding=pooled,
             loss=loss,
         )
 

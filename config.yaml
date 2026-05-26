@@ -20,6 +20,7 @@ model:
   encoder: "answerdotai/ModernBERT-large"
   max_length: 256              # T4 limit; 4090: use 512
   hidden_size: 1024            # ModernBERT-large hidden size
+  pooling: "mean"              # mean pooling (ModernBERT has no CLS objective)
 
 # --- Intent Taxonomy (6 Behavioural Clusters, 20 Labels) ---
 intents:
@@ -67,6 +68,10 @@ training:
   lora_r: 8                        # Phase 2: reduced rank for generalization
   lora_alpha: 16                   # Keep ratio alpha/r = 2
   lora_dropout: 0.15               # Phase 2: stronger dropout
+  label_smoothing: 0.1             # prevents overconfident predictions, improves ECE
+  scheduler: "cosine"              # cosine annealing with warmup
+  save_steps: 5000                 # mid-epoch checkpoint frequency
+  early_stopping_patience: 3       # epochs without val F1 improvement before stopping
   seed: 42
 
 # --- Curriculum stages ---

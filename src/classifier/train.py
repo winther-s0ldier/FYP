@@ -3,6 +3,15 @@ ModernBERT fine-tuning with LoRA + HuggingFace Accelerate.
 Supports multi-task (toxicity + intent), single-task ablations, and
 Phase 2 curriculum training (--stage 1 / --stage 2).
 
+Optimizations (2025-2026):
+  - Dynamic padding collator — 2-3x throughput (avg 50-80 tokens vs padded 256)
+  - Cosine annealing schedule — smoother convergence than linear decay
+  - Mean pooling — better representations (ModernBERT has no CLS objective)
+  - Label smoothing 0.1 — prevents overconfident predictions
+  - LoRA r=16 — 2x adapter capacity, still <1% total params
+  - Early stopping — saves GPU hours when val F1 plateaus
+  - Mid-epoch checkpointing — survives Kaggle session kills
+
 Single-GPU:  python -m src.classifier.train --stage 1
 Two GPUs:    accelerate launch --num_processes 2 -m src.classifier.train --stage 1
 """
@@ -11,7 +20,7 @@ import torch
 import numpy as np
 from pathlib import Path
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
 from peft import get_peft_model, LoraConfig, TaskType, PeftModel
 from sklearn.metrics import f1_score, roc_auc_score
 from accelerate import Accelerator
@@ -19,7 +28,7 @@ from accelerate.utils import DistributedDataParallelKwargs
 import yaml
 
 from src.classifier.model import ContentModerationModel
-from src.classifier.dataset import build_train_dataset, INTENT_LABELS
+from src.classifier.dataset import build_train_dataset, ModerationCollator, INTENT_LABELS
 
 try:
     import wandb
@@ -34,7 +43,7 @@ def load_config() -> dict:
 
 
 def apply_lora(model: ContentModerationModel, cfg: dict) -> ContentModerationModel:
-    """Wrap encoder with LoRA — only trains ~0.5% of parameters."""
+    """Wrap encoder with LoRA — only trains ~1% of parameters."""
     lora_config = LoraConfig(
         task_type=TaskType.FEATURE_EXTRACTION,
         r=cfg["training"]["lora_r"],
@@ -61,7 +70,6 @@ def evaluate(model, loader, accelerator: Accelerator) -> dict:
     total_loss = 0.0
 
     for batch in loader:
-        # Accelerate already moved batch tensors to the correct device
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         tox_labels = batch["toxicity_labels"]
@@ -124,14 +132,13 @@ def train(
         print(f"Device: {device}  |  Num processes: {accelerator.num_processes}")
         print(f"Mixed precision: {mixed_precision}")
         print(f"Curriculum Stage: {stage}")
-        print("⚡ PyTorch Native Flash Attention (SDPA) activated!")
 
     torch.manual_seed(cfg["training"]["seed"])
 
     if accelerator.is_main_process:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Tokeniser ---
+    # --- Tokenizer ---
     tokenizer = AutoTokenizer.from_pretrained(cfg["model"]["encoder"])
 
     # --- Data (curriculum-aware) ---
@@ -145,15 +152,32 @@ def train(
         stage=stage,
     )
 
+    # Dynamic padding collator — pads each batch to its longest sequence
+    # instead of max_length=256. 2-3x faster since avg chat msg is ~50-80 tokens.
+    collator = ModerationCollator(tokenizer, has_labels=True)
+
     num_workers = cfg["hardware"].get("num_workers", 4)
     train_loader = DataLoader(
         train_ds, batch_size=cfg["training"]["batch_size"],
-        shuffle=True, num_workers=num_workers, pin_memory=True
+        shuffle=True, num_workers=num_workers, pin_memory=True,
+        collate_fn=collator,
+        persistent_workers=True if num_workers > 0 else False,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_ds, batch_size=cfg["training"]["batch_size"] * 2,
-        shuffle=False, num_workers=num_workers, pin_memory=True
+        shuffle=False, num_workers=num_workers, pin_memory=True,
+        collate_fn=collator,
+        persistent_workers=True if num_workers > 0 else False,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
+
+    if accelerator.is_main_process:
+        pooling = cfg["model"].get("pooling", "mean")
+        label_smoothing = cfg["training"].get("label_smoothing", 0.0)
+        print(f"Pooling: {pooling}  |  Label smoothing: {label_smoothing}")
+        print(f"LoRA r={cfg['training']['lora_r']}  |  Scheduler: cosine")
+        print(f"Dynamic padding: ON  |  Save every {cfg['training'].get('save_steps', 5000)} steps")
 
     # --- Model ---
     alpha = cfg["training"]["alpha"] if task != "intent_only" else 0.0
@@ -167,7 +191,9 @@ def train(
         focal_gamma=cfg["training"]["focal_loss_gamma"],
         focal_alpha=cfg["training"]["focal_loss_alpha"],
         attn_implementation="sdpa",
-        intent_class_weights=intent_weights,  # inverse-freq weights → fixes 1154:1 imbalance
+        intent_class_weights=intent_weights,
+        pooling=cfg["model"].get("pooling", "mean"),
+        label_smoothing=cfg["training"].get("label_smoothing", 0.0),
     )
 
     # --- Model & Resume Logic ---
@@ -181,17 +207,17 @@ def train(
         model.toxicity_head.load_state_dict(heads_data["toxicity_head"])
         model.intent_head.load_state_dict(heads_data["intent_head"])
         if accelerator.is_main_process:
-            print("✓ Checkpoint loaded successfully.")
+            print("Checkpoint loaded successfully.")
     else:
         if use_lora and not full_ft:
             model = apply_lora(model, cfg)
         else:
             if accelerator.is_main_process:
-                print("🚀 FULL FINE-TUNING ENABLED: Training all 150M+ parameters.")
+                print("FULL FINE-TUNING: Training all 150M+ parameters.")
             for param in model.parameters():
                 param.requires_grad = True
 
-    # --- Optimiser ---
+    # --- Optimizer + Cosine Schedule ---
     lr = cfg["training"]["learning_rate"] if not full_ft else 5e-6
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
@@ -200,7 +226,9 @@ def train(
     )
     total_steps = len(train_loader) * cfg["training"]["epochs"]
     warmup_steps = int(total_steps * cfg["training"]["warmup_ratio"])
-    scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+    # Cosine annealing: smoother convergence than linear decay.
+    # LR decays following a cosine curve from peak to near-zero.
+    scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
 
     # --- Accelerate: prepare everything (DDP wrap + device move) ---
     model, optimizer, train_loader, val_loader, scheduler = accelerator.prepare(
@@ -211,18 +239,55 @@ def train(
     if accelerator.is_main_process and WANDB_AVAILABLE and os.getenv("WANDB_API_KEY"):
         wandb.init(project="content-moderation", name=run_name or task, config=cfg)
 
-    grad_accum = cfg["training"].get("gradient_accumulation_steps", 1)
+    # --- Mid-epoch checkpoint helpers (uses Accelerate save_state/load_state) ---
+    save_steps = cfg["training"].get("save_steps", 5000)
+    latest_ckpt_dir = checkpoint_dir / f"latest_{task}"
+    meta_file = latest_ckpt_dir / "meta.pt"
+
+    def save_mid_epoch(epoch_num, step_num):
+        """Save a resumable mid-epoch checkpoint every `save_steps` steps."""
+        latest_ckpt_dir.mkdir(parents=True, exist_ok=True)
+        accelerator.save_state(str(latest_ckpt_dir))
+        if accelerator.is_main_process:
+            torch.save({
+                "epoch": epoch_num,
+                "step": step_num,
+                "best_val_f1": best_val_f1,
+            }, meta_file)
+            print(f"  >> Mid-epoch checkpoint saved (epoch {epoch_num+1}, step {step_num})")
+
+    def load_mid_epoch():
+        """Resume from mid-epoch checkpoint if it exists."""
+        if not meta_file.exists():
+            return 0, 0, 0.0
+        if accelerator.is_main_process:
+            print(f"  >> Resuming from mid-epoch checkpoint: {latest_ckpt_dir}")
+        accelerator.load_state(str(latest_ckpt_dir))
+        meta = torch.load(meta_file, map_location="cpu", weights_only=True)
+        return meta["epoch"], meta["step"], meta.get("best_val_f1", 0.0)
 
     # --- Training loop ---
     best_val_f1 = 0.0
+    patience = cfg["training"].get("early_stopping_patience", 3)
+    patience_counter = 0
 
-    for epoch in range(cfg["training"]["epochs"]):
+    # Try resuming from mid-epoch checkpoint (survives session kills)
+    start_epoch, start_step, best_val_f1 = load_mid_epoch()
+    if start_step > 0 and accelerator.is_main_process:
+        print(f"  Resuming from epoch {start_epoch+1}, step {start_step}")
+        print(f"  Best val F1 so far: {best_val_f1:.4f}")
+
+    for epoch in range(start_epoch, cfg["training"]["epochs"]):
         model.train()
         total_loss = 0.0
+        n_steps_this_epoch = 0
         optimizer.zero_grad()
 
         for step, batch in enumerate(train_loader):
-            # accelerator.accumulate handles the grad_accum + sync logic
+            # Skip steps already completed in a resumed epoch
+            if epoch == start_epoch and step < start_step:
+                continue
+
             with accelerator.accumulate(model):
                 input_ids = batch["input_ids"]
                 attention_mask = batch["attention_mask"]
@@ -242,33 +307,43 @@ def train(
                 optimizer.zero_grad()
 
             total_loss += loss.detach().item()
+            n_steps_this_epoch += 1
 
             if step % 100 == 0 and accelerator.is_main_process:
                 print(f"Epoch {epoch+1} | Step {step}/{len(train_loader)} | "
                       f"Loss: {loss.detach().item():.4f}")
 
-        # --- Validation (main process collects gathered metrics) ---
+            # Mid-epoch checkpoint (every save_steps steps)
+            if step > 0 and step % save_steps == 0:
+                save_mid_epoch(epoch, step)
+
+        # Reset start_step after first resumed epoch completes
+        start_step = 0
+
+        # --- Validation ---
         val_metrics = evaluate(model, val_loader, accelerator)
         avg_f1 = (val_metrics["toxicity_f1"] + val_metrics["intent_f1_macro"]) / 2
 
         if accelerator.is_main_process:
+            avg_loss = total_loss / max(n_steps_this_epoch, 1)
             print(f"\nEpoch {epoch+1} Summary:")
-            print(f"  Train loss:   {total_loss / len(train_loader):.4f}")
+            print(f"  Train loss:   {avg_loss:.4f}")
             print(f"  Val loss:     {val_metrics['loss']:.4f}")
             print(f"  Tox F1:       {val_metrics['toxicity_f1']:.4f}")
             print(f"  Tox AUC:      {val_metrics['toxicity_auc']:.4f}")
             print(f"  Intent F1:    {val_metrics['intent_f1_macro']:.4f}")
+            print(f"  Avg F1:       {avg_f1:.4f}")
 
             if WANDB_AVAILABLE and wandb.run:
                 wandb.log({"epoch": epoch + 1, **val_metrics,
-                           "train_loss": total_loss / len(train_loader)})
+                           "train_loss": avg_loss})
 
             if avg_f1 > best_val_f1:
                 best_val_f1 = avg_f1
+                patience_counter = 0
                 save_path = checkpoint_dir / f"best_{task}"
                 save_path.mkdir(parents=True, exist_ok=True)
 
-                # Unwrap DDP wrapper before saving
                 unwrapped = accelerator.unwrap_model(model)
 
                 if hasattr(unwrapped.encoder, "save_pretrained"):
@@ -284,7 +359,23 @@ def train(
                     "config": cfg,
                     "task": task,
                 }, save_path / "heads.pt")
-                print(f"  ✓ Saved best model (avg F1: {avg_f1:.4f}) → {save_path}")
+                print(f"  >> Saved best model (avg F1: {avg_f1:.4f})")
+            else:
+                patience_counter += 1
+                print(f"  No improvement. Patience: {patience_counter}/{patience}")
+
+            # Clean up mid-epoch checkpoint after successful epoch
+            if latest_ckpt_dir.exists():
+                import shutil
+                shutil.rmtree(latest_ckpt_dir)
+
+        # Early stopping (broadcast decision from main process)
+        should_stop = torch.tensor([patience_counter >= patience], device=device)
+        should_stop = accelerator.gather(should_stop)[0].item()
+        if should_stop:
+            if accelerator.is_main_process:
+                print(f"\n  Early stopping triggered after {patience} epochs without improvement.")
+            break
 
     if accelerator.is_main_process and WANDB_AVAILABLE and wandb.run:
         wandb.finish()

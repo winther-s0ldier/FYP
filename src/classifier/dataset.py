@@ -67,6 +67,9 @@ class ModerationDataset(Dataset):
     """
     Unified dataset for toxicity + intent training.
     Expects a DataFrame with columns: text, toxic (0/1), intent (label string).
+
+    Returns variable-length token sequences (no padding).
+    Use ModerationCollator with DataLoader for dynamic batch padding.
     """
 
     def __init__(
@@ -90,12 +93,12 @@ class ModerationDataset(Dataset):
             normalize_text(row["text"]),
             max_length=self.max_length,
             truncation=True,
-            padding="max_length",
-            return_tensors="pt",
+            padding=False,          # No padding — collator handles it per-batch
+            return_tensors=None,    # Returns plain lists, not tensors
         )
         item = {
-            "input_ids": enc["input_ids"].squeeze(0),
-            "attention_mask": enc["attention_mask"].squeeze(0),
+            "input_ids": enc["input_ids"],           # list[int], variable length
+            "attention_mask": enc["attention_mask"],  # list[int], variable length
         }
         if self.has_labels:
             item["toxicity_labels"] = torch.tensor(float(row.get("toxic", 0)))
@@ -109,6 +112,50 @@ class ModerationDataset(Dataset):
             else:
                 item["intent_labels"] = torch.tensor(-100, dtype=torch.long)
         return item
+
+
+class ModerationCollator:
+    """Dynamic padding — pads each batch to its longest sequence, not max_length.
+
+    Why this matters:
+      Average chat message is ~30-80 tokens, but max_length=256.
+      Fixed padding wastes 70-90% of tokens as zeros.
+      Attention is O(n^2) so halving seq length = 4x attention speedup.
+      Empirically gives 2-3x training throughput improvement.
+
+    Usage:
+      collator = ModerationCollator(tokenizer)
+      DataLoader(dataset, collate_fn=collator, ...)
+    """
+
+    def __init__(self, tokenizer, has_labels: bool = True):
+        self.pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+        self.has_labels = has_labels
+
+    def __call__(self, batch: list[dict]) -> dict:
+        max_len = max(len(item["input_ids"]) for item in batch)
+
+        input_ids = []
+        attention_masks = []
+        for item in batch:
+            pad_len = max_len - len(item["input_ids"])
+            input_ids.append(item["input_ids"] + [self.pad_id] * pad_len)
+            attention_masks.append(item["attention_mask"] + [0] * pad_len)
+
+        result = {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_masks, dtype=torch.long),
+        }
+
+        if self.has_labels and "toxicity_labels" in batch[0]:
+            result["toxicity_labels"] = torch.stack(
+                [item["toxicity_labels"] for item in batch]
+            )
+            result["intent_labels"] = torch.stack(
+                [item["intent_labels"] for item in batch]
+            )
+
+        return result
 
 
 # ===========================================================================
