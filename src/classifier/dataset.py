@@ -698,6 +698,32 @@ def build_train_dataset(
     print(f"\n  Split: train={len(train):,} | val={len(val):,} | test={len(test):,}")
     print(f"  Toxic ratio — train: {train['toxic'].mean():.3f} | val: {val['toxic'].mean():.3f}")
 
+    # Rare intent upsampling: boost classes below 500 training samples by
+    # duplicating existing rows (with replacement). Static oversampling is
+    # DDP-safe — WeightedRandomSampler gets re-wrapped by Accelerate in ways
+    # that can break distributed sampling across two T4s.
+    # Without this, malicious classes (grooming/gaslighting/identity_concealment)
+    # have only 25-42 training examples — too few for reliable gradient
+    # computation even after sqrt weight dampening.
+    _min_per_class = 500
+    _intent_part = train[train["has_intent"] == True]
+    _extras = []
+    for _label in INTENT_LABELS:
+        _class_rows = _intent_part[_intent_part["intent"] == _label]
+        _shortfall = _min_per_class - len(_class_rows)
+        if _shortfall > 0 and len(_class_rows) > 0:
+            _extras.append(
+                _class_rows.sample(n=_shortfall, replace=True, random_state=seed)
+            )
+    if _extras:
+        _added = sum(len(e) for e in _extras)
+        _boosted = len(_extras)
+        train = pd.concat([train] + _extras, ignore_index=True).sample(
+            frac=1, random_state=seed
+        ).reset_index(drop=True)
+        print(f"  Rare intent upsampling: +{_added:,} rows across {_boosted} classes "
+              f"(floor={_min_per_class})")
+
     # Intent distribution summary + class weight computation
     intent_train = train[train["has_intent"] == True]
     print(f"\n  Intent distribution (train, has_intent=True: {len(intent_train):,} rows):")
@@ -706,20 +732,21 @@ def build_train_dataset(
     if len(intent_train["intent"].unique()) > 10:
         print(f"    ... and {len(intent_train['intent'].unique()) - 10} more labels")
 
-    # Inverse-frequency class weights for CrossEntropyLoss.
-    # Corrects the 1154:1 imbalance between "question" (54k rows) and rare
-    # malicious intent classes (~47-70 rows). weight_i = N / (C * count_i).
+    # Sqrt-dampened inverse-frequency class weights for CrossEntropyLoss.
+    # Raw inverse-freq gives weights up to 123× for rare classes, which
+    # destabilizes training (intent F1 = 0.000 after 3 epochs).
+    # sqrt() compresses the range: 123× → ~11×, keeping signal without noise.
     counts = intent_train["intent"].value_counts()
     n_total = len(intent_train)
     n_classes = len(INTENT_LABELS)
     weights = torch.zeros(n_classes)
     for label, idx in INTENT2IDX.items():
         count = counts.get(label, 1)   # default to 1 to avoid division by zero
-        weights[idx] = n_total / (n_classes * count)
-    # Clip extreme weights: cap at 50× median to prevent instability on ultra-rare classes
+        weights[idx] = (n_total / (n_classes * count)) ** 0.5  # sqrt dampening
+    # Clip extreme weights: cap at 10× median (was 50× — too aggressive)
     median_w = weights.median()
-    weights = weights.clamp(max=50.0 * median_w)
-    print(f"\n  Intent class weights (inverse-freq, clipped at 50x median):")
+    weights = weights.clamp(max=10.0 * median_w)
+    print(f"\n  Intent class weights (sqrt-dampened, clipped at 10x median):")
     top3_heavy = sorted(INTENT_LABELS, key=lambda l: -weights[INTENT2IDX[l]])[:3]
     top3_light = sorted(INTENT_LABELS, key=lambda l: weights[INTENT2IDX[l]])[:3]
     for l in top3_heavy:
