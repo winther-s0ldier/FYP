@@ -38,7 +38,15 @@ class FocalLoss(nn.Module):
         target = target.float()
         bce = nn.functional.binary_cross_entropy(pred, target, reduction="none")
         pt = torch.where(target == 1, pred, 1 - pred)
-        focal_weight = self.alpha * (1 - pt) ** self.gamma
+        # Class-differentiated alpha: toxic samples get self.alpha weight,
+        # non-toxic get (1 - self.alpha). With alpha=0.75, toxic class gets
+        # 3x more gradient than non-toxic, directly addressing 8% class imbalance.
+        alpha_t = torch.where(
+            target == 1,
+            torch.full_like(pred, self.alpha),
+            torch.full_like(pred, 1.0 - self.alpha),
+        )
+        focal_weight = alpha_t * (1 - pt) ** self.gamma
         return (focal_weight * bce).mean()
 
 

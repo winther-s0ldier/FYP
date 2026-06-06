@@ -61,10 +61,10 @@ training:
   learning_rate: 5.0e-6            # Phase 2: slower to avoid memorization
   warmup_ratio: 0.1
   weight_decay: 0.05               # Phase 2: stronger regularization
-  alpha: 0.5                       # toxicity loss weight
+  alpha: 0.65                      # toxicity loss weight (increased to prioritise tox F1)
   beta: 0.5                        # intent loss weight
-  focal_loss_gamma: 2.0
-  focal_loss_alpha: 0.25
+  focal_loss_gamma: 1.0            # reduced from 2.0 — less conservative, more decisive scores
+  focal_loss_alpha: 0.75           # toxic class gets 3x gradient vs non-toxic (class-differentiated)
   lora_r: 8                        # Phase 2: reduced rank for generalization
   lora_alpha: 16                   # Keep ratio alpha/r = 2
   lora_dropout: 0.15               # Phase 2: stronger dropout
