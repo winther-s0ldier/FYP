@@ -1,7 +1,3 @@
-"""
-Run this ONCE to set up the virtual environment and install all dependencies.
-Usage: python setup.py
-"""
 import subprocess
 import sys
 import os
@@ -21,14 +17,12 @@ def run(cmd: list[str], **kwargs):
 def main():
     venv_dir = ROOT / ".venv"
 
-    # 1. Create venv
     if not venv_dir.exists():
         print("Creating virtual environment...")
         run([sys.executable, "-m", "venv", str(venv_dir)])
     else:
         print("Virtual environment already exists.")
 
-    # 2. Resolve pip path
     if sys.platform == "win32":
         pip = str(venv_dir / "Scripts" / "pip.exe")
         python = str(venv_dir / "Scripts" / "python.exe")
@@ -36,10 +30,8 @@ def main():
         pip = str(venv_dir / "bin" / "pip")
         python = str(venv_dir / "bin" / "python")
 
-    # 3. Upgrade pip
     run([python, "-m", "pip", "install", "--upgrade", "pip"])
 
-    # 4. Install PyTorch with CUDA 12.4 (compatible with driver 595.79 / CUDA 13.2)
     print("\nInstalling PyTorch with CUDA 12.4 support...")
     run([
         pip, "install",
@@ -47,7 +39,6 @@ def main():
         "--index-url", "https://download.pytorch.org/whl/cu124"
     ])
 
-    # 5. Verify CUDA is available
     print("\nVerifying CUDA availability...")
     result = subprocess.run(
         [python, "-c",
@@ -60,18 +51,15 @@ def main():
     if "CUDA available: False" in result.stdout:
         print("WARNING: CUDA not detected. Training will fall back to CPU (slow).")
 
-    # 6. Install remaining requirements
     print("\nInstalling project requirements...")
     run([pip, "install", "-r", str(ROOT / "requirements.txt")])
 
-    # 7. Install PageIndex from source
     print("\nInstalling PageIndex (vectorless RAG)...")
     try:
         run([pip, "install", "git+https://github.com/VectifyAI/PageIndex.git"])
     except SystemExit:
         print("WARNING: PageIndex install failed (optional for Phase 1). Skipping.")
 
-    # 8. Configure Kaggle token
     kaggle_dir = Path.home() / ".kaggle"
     kaggle_dir.mkdir(exist_ok=True)
     kaggle_json = kaggle_dir / "kaggle.json"

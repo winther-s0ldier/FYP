@@ -1,70 +1,52 @@
-# =============================================================================
-# Install order matters — run setup.py or follow SETUP.md
-# PyTorch must be installed FIRST via the CUDA-specific index (see setup.py)
-# =============================================================================
-
-# --- Core ML ---
-# torch installed separately: pip install torch --index-url https://download.pytorch.org/whl/cu124
-transformers>=4.47.0
+accelerate>=0.34.0
+bitsandbytes>=0.43.0
+datasets>=3.0.0
+optimum[onnxruntime]>=1.22.0
 peft>=0.14.0
-bitsandbytes>=0.43.0          # 4-bit quantisation (QLoRA)
-accelerate>=0.34.0            # mixed precision + multi-GPU
-datasets>=3.0.0               # HuggingFace datasets
 tokenizers>=0.20.0
-optimum[onnxruntime]>=1.22.0  # ONNX export + ORT inference
+transformers==4.48.3
 
-# --- Sequence models ---
-hmmlearn>=0.3.0               # HMM: Baum-Welch + Viterbi
-pomegranate>=1.0.4            # GPU-accelerated HMM (optional)
+hmmlearn>=0.3.0
+pomegranate>=1.0.4
 
-# --- Evaluation & ML utils ---
-scikit-learn>=1.5.0
-imbalanced-learn>=0.12.0      # SMOTE
-scipy>=1.13.0                 # McNemar's test, stats
-statsmodels>=0.14.0           # McNemar's via contingency tables
+imbalanced-learn>=0.12.0
 numpy>=1.26.0
 pandas>=2.2.0
+pyarrow>=15.0.0
+scikit-learn>=1.5.0
+scipy>=1.13.0
+statsmodels>=0.14.0
 
-# --- Explainability ---
-shap>=0.46.0
 bertviz>=1.4.0
+shap>=0.46.0
 
-# --- MLOps ---
-wandb>=0.18.0                 # experiment tracking
-# mlflow>=2.16.0              # alternative to wandb
-dvc>=3.55.0                   # dataset versioning
+dvc>=3.55.0
+wandb>=0.18.0
 
-# --- Retrieval ---
-faiss-cpu>=1.8.0              # ANN index (swap for faiss-gpu if needed)
-chromadb>=0.5.0               # local vector store for prototyping
-# pageindex                   # install from source: pip install git+https://github.com/VectifyAI/PageIndex
+chromadb>=0.5.0
+faiss-cpu>=1.8.0
 
-# --- Backend ---
+asyncpg>=0.30.0
+celery>=5.4.0
 fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
+httpx>=0.27.0
+pgvector>=0.3.5
 pydantic>=2.9.0
-celery>=5.4.0                 # async task queue
-httpx>=0.27.0                 # async HTTP client
-redis>=5.1.0                  # Redis client
-asyncpg>=0.30.0               # async PostgreSQL
-pgvector>=0.3.5               # pgvector Python client
-python-dotenv>=1.0.0          # .env loading
+python-dotenv>=1.0.0
+redis>=5.1.0
+uvicorn[standard]>=0.32.0
 websockets>=13.0
 
-# --- Escalation LLM clients ---
-groq>=0.11.0                  # Groq API (primary escalation)
-openai>=1.50.0                # GPT-4o-mini fallback
-anthropic>=0.36.0             # Claude Haiku optional
+anthropic>=0.36.0
+groq>=0.11.0
+openai>=1.50.0
 
-# --- Kaggle ---
-kaggle>=1.6.17                # dataset download
+kaggle>=1.6.17
 
-# --- Testing ---
+locust>=2.31.0
 pytest>=8.3.0
 pytest-asyncio>=0.24.0
 pytest-benchmark>=4.0.0
-locust>=2.31.0                # load testing
 
-# --- Data processing ---
 nltk>=3.9.0
 regex>=2024.9.11

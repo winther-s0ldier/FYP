@@ -1,28 +1,19 @@
-# =============================================================================
-# Project Configuration — Phase 2 (Updated 2026-05-06)
-# =============================================================================
-
 project:
-  name: "real-time-content-moderation"
-  version: "0.2.0"
-
-# --- Hardware (Kaggle T4 x2 — 15GB each) ---
-# 4090 overrides: gpu_vram_gb: 24, batch_size: 32, gradient_accumulation_steps: 1, max_length: 512, num_workers: 8
+  name: "3eyedraven"
+  
 hardware:
   device: "cuda"
   gpu_vram_gb: 15
   fp16: true
   flash_attention: true
-  num_workers: 4               # T4 has 4 CPUs per GPU
+  num_workers: 4
 
-# --- Model ---
 model:
   encoder: "answerdotai/ModernBERT-large"
-  max_length: 256              # T4 limit; 4090: use 512
-  hidden_size: 1024            # ModernBERT-large hidden size
-  pooling: "mean"              # mean pooling (ModernBERT has no CLS objective)
+  max_length: 256
+  hidden_size: 1024
+  pooling: "mean"
 
-# --- Intent Taxonomy (6 Behavioural Clusters, 20 Labels) ---
 intents:
   neutral_benign:
     - greeting
@@ -52,29 +43,26 @@ intents:
     - denial
     - identity_concealment
 
-# --- Training (Kaggle T4 x2) ---
-# 4090 overrides: batch_size: 32, gradient_accumulation_steps: 1
 training:
-  epochs: 2                     # Kaggle T4 session limit; resume for more epochs
-  batch_size: 16                    # T4 only uses 3.8GB/15GB at batch=4; 16 keeps ~10GB
-  gradient_accumulation_steps: 1    # effective batch = 16 * 2 GPUs = 32, same as before
-  learning_rate: 5.0e-6            # Phase 2: slower to avoid memorization
+  epochs: 2
+  batch_size: 16
+  gradient_accumulation_steps: 1
+  learning_rate: 5.0e-6
   warmup_ratio: 0.1
-  weight_decay: 0.05               # Phase 2: stronger regularization
-  alpha: 0.65                      # toxicity loss weight (increased to prioritise tox F1)
-  beta: 0.5                        # intent loss weight
-  focal_loss_gamma: 1.0            # reduced from 2.0 — less conservative, more decisive scores
-  focal_loss_alpha: 0.75           # toxic class gets 3x gradient vs non-toxic (class-differentiated)
-  lora_r: 8                        # Phase 2: reduced rank for generalization
-  lora_alpha: 16                   # Keep ratio alpha/r = 2
-  lora_dropout: 0.15               # Phase 2: stronger dropout
-  label_smoothing: 0.1             # prevents overconfident predictions, improves ECE
-  scheduler: "cosine"              # cosine annealing with warmup
-  save_steps: 5000                 # mid-epoch checkpoint frequency
-  early_stopping_patience: 3       # epochs without val F1 improvement before stopping
+  weight_decay: 0.05
+  alpha: 0.65
+  beta: 0.5
+  focal_loss_gamma: 1.0
+  focal_loss_alpha: 0.75
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.15
+  label_smoothing: 0.1
+  scheduler: "cosine"
+  save_steps: 5000
+  early_stopping_patience: 3
   seed: 42
 
-# --- Curriculum stages ---
 curriculum:
   stage_1:
     datasets: ["metahate", "jigsaw_2018", "jigsaw_2019", "civil_comments", "banking77", "clinc150", "daily_dialog"]
@@ -83,30 +71,26 @@ curriculum:
     datasets: ["toxigen"]
     description: "Implicit & Adversarial — harden against sarcasm, microaggressions, escalation"
 
-# --- Data splits ---
 data:
   train_ratio: 0.70
   val_ratio: 0.15
   test_ratio: 0.15
   stratify: true
 
-# --- Pipeline thresholds ---
 pipeline:
   confidence_threshold: 0.65
-  intent_confidence_threshold: 0.70   # min to feed HMM
+  intent_confidence_threshold: 0.70
   block_threshold: 0.85
   flag_threshold: 0.65
   warn_threshold: 0.40
   session_window_size: 10
   session_ttl_seconds: 1800
 
-# --- HMM ---
 hmm:
   n_iter: 100
   tol: 1.0e-4
   uncertain_state: true
 
-# --- Escalation ---
 escalation:
   provider: "groq"
   groq_model: "llama-3.3-70b-versatile"
@@ -114,7 +98,6 @@ escalation:
   max_tokens: 512
   temperature: 0.1
 
-# --- Evaluation targets ---
 targets:
   toxicity_f1: 0.85
   toxicity_auc_roc: 0.92

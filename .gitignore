@@ -1,58 +1,40 @@
-# Secrets
 .env
 *.key
 kaggle.json
 
-# Python
 __pycache__/
 *.py[cod]
 *.pyo
 .venv/
 venv/
-fyp/            # local venv (was accidentally committed — never again)
 *.egg-info/
 dist/
 build/
 
-# Data (large files — use DVC)
 data/raw/
 data/processed/
 *.csv
 *.parquet
 *.jsonl
 
-# Models (large — use DVC or HuggingFace Hub)
 models/checkpoints/
 models/onnx/
 *.pt
 *.bin
 *.safetensors
 
-# Notebooks checkpoints
 .ipynb_checkpoints/
 
-# IDE
 .vscode/
 .idea/
 *.swp
 
-# OS
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-wandb/
-mlruns/
-
-# Infrastructure
 linux_stack/
 
-# Archives (always extract, never commit)
 *.tar.gz
 *.tar.bz2
 *.zip
 *.part_*
-
-# Claude Code settings (local only)
-.claude/
