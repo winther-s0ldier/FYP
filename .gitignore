@@ -9,6 +9,7 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+fyp/            # local venv (was accidentally committed — never again)
 *.egg-info/
 dist/
 build/
@@ -46,3 +47,12 @@ mlruns/
 
 # Infrastructure
 linux_stack/
+
+# Archives (always extract, never commit)
+*.tar.gz
+*.tar.bz2
+*.zip
+*.part_*
+
+# Claude Code settings (local only)
+.claude/

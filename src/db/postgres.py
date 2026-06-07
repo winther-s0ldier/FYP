@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:secret@localhost:5432/moderation")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://fyp:fyp@localhost:5432/moderation")
 
 CREATE_TABLES_SQL = """
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS messages (
     latency_ms      FLOAT,
     reasoning       TEXT,
     policy_rule     TEXT,
-    embedding       vector(768)
+    embedding       vector(1024)   -- ModernBERT-large hidden_size=1024
 );
 
 CREATE INDEX IF NOT EXISTS messages_hnsw_idx

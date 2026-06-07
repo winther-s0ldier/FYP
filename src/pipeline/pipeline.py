@@ -64,6 +64,7 @@ class ModerationPipeline:
         message_store: Optional[MessageStore] = None,
         device: str = "cuda",
         max_length: int = 256,
+        tox_threshold: float = 0.40,  # tuned on val set; focal loss produces conservative scores
     ):
         self.model = model.eval()
         self.tokenizer = tokenizer
@@ -73,6 +74,7 @@ class ModerationPipeline:
         self.message_store = message_store
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.max_length = max_length
+        self.tox_threshold = tox_threshold
 
     async def classify(self, req: ClassificationRequest) -> ClassificationResponse:
         t0 = time.perf_counter()

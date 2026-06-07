@@ -1,0 +1,39 @@
+version: "3.9"
+
+# Local dev infra — start with: docker compose up -d
+# Stops with:                    docker compose down
+# Wipe data:                     docker compose down -v
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: pgvector/pgvector:pg16   # includes pgvector extension
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: fyp
+      POSTGRES_PASSWORD: fyp
+      POSTGRES_DB: moderation
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fyp -d moderation"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis_data:
+  pg_data:

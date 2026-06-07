@@ -86,9 +86,11 @@ ModernBERT-large (answerdotai/ModernBERT-large)
 ```
 
 ### Loss Functions
-- **Toxicity**: Focal Loss (α=0.25, γ=2.0, fp32 even under fp16 training)
+- **Toxicity**: Focal Loss (α=0.75, γ=1.0, fp32 even under fp16 training)
+  - α=0.75: toxic class gets 3× more gradient than non-toxic (class-differentiated, not uniform)
+  - γ=1.0: reduced from 2.0 for less conservative outputs, better calibration
 - **Intent**: Weighted CrossEntropyLoss (sqrt-dampened weights, label_smoothing=0.1)
-- **Combined**: `L = 0.5 × L_tox + 0.5 × L_intent`
+- **Combined**: `L = 0.65 × L_tox + 0.5 × L_intent`
 
 ### Training Setup
 - **Hardware**: Kaggle T4×2 (15GB each), DDP via HuggingFace Accelerate
@@ -125,29 +127,34 @@ Stage 1 datasets + **ToxiGen** (implicit hate, sarcasm, microaggressions)
 ## Training Results
 
 ### Progression
-| Stage | Epoch | Tox F1 | Tox AUC | Intent F1 | Avg F1 |
-|---|---|---|---|---|---|
-| Before fix | — | 0.000 | — | 0.000 | — |
-| Stage 1 | 1 | 0.3349 | 0.8831 | 0.3311 | 0.3330 |
-| Stage 1 | 2 | 0.3587 | 0.8877 | 0.4263 | 0.3925 |
-| Stage 2 | 1 | 0.3524 | 0.8992 | 0.4912 | 0.4218 |
-| Stage 2 | 2 | 0.3839 | **0.9005** | **0.5170** | 0.4505 |
+| Stage | Epoch | Tox F1 | Tox AUC | Intent F1 | Avg F1 | Notes |
+|---|---|---|---|---|---|---|
+| Before fix | — | 0.000 | — | 0.000 | — | Intent head collapse |
+| Stage 1 | 1 | 0.3349 | 0.8831 | 0.3311 | 0.3330 | Broken focal loss (uniform α) |
+| Stage 1 | 2 | 0.3587 | 0.8877 | 0.4263 | 0.3925 | Broken focal loss |
+| Stage 2 | 1 | 0.3524 | 0.8992 | 0.4912 | 0.4218 | Broken focal loss |
+| Stage 2 | 2 | 0.3839 | 0.9005 | 0.5170 | 0.4505 | Broken focal loss — best before fix |
+| **Retrain** | **1** | **0.5059** | **0.9031** | **0.3870** | **0.4464** | Fixed focal loss (α=0.75, γ=1.0) |
+| Retrain | 2 | **0.5273** | **0.9121** | **0.4634** | **0.4954** | Stage 1 complete — best checkpoint saved |
+| Retrain S2 | 1 | — | — | — | — | ToxiGen hardening — in progress |
 
-### Threshold Tuning
-Val set threshold sweep (500-sample subset) after Stage 2:
+### Threshold Tuning (old model — pre focal loss fix)
+Val set threshold sweep (500-sample subset) after Stage 2 with broken focal loss:
 - **AUC: 0.9176** (target: 0.92 ✅)
 - Tox F1 at default threshold (0.50): 0.4800
 - **Optimal threshold: 0.40**
 - **Tox F1 at optimal threshold: 0.6486**
 
-**Why AUC ≠ F1:** The focal loss (γ=2.0) heavily down-weights easy examples, producing conservative sigmoid outputs (scores cluster below 0.5). The model correctly *ranks* toxic above non-toxic (AUC=0.92) but needs a lower threshold (0.40) for binary classification. This is a calibration issue, not a learning failure.
+**Why AUC ≠ F1:** Focal loss (γ=2.0, uniform α) produced conservative sigmoid outputs (scores cluster below 0.5). Model ranked correctly (AUC=0.92) but needed lower threshold for binary decisions. Fixed with class-differentiated α=0.75, γ=1.0 — scores should be better calibrated.
 
-### Targets vs Achieved
-| Metric | Achieved | Target | Notes |
-|---|---|---|---|
-| Tox AUC | 0.9176 | 0.92 | ✅ Essentially met |
-| Tox F1 | 0.6486 | 0.85 | Threshold-tuned; improve with civil_comments |
-| Intent F1 | 0.5170 | 0.80 | 21 novel classes, limited labeled data |
+*Note: Threshold tuning to be re-run after retrain completes. Expected optimal threshold closer to 0.45-0.50 with fixed focal loss.*
+
+### Targets vs Current Best
+| Metric | Old (broken α) | Retrain S1 Ep2 | Target | Notes |
+|---|---|---|---|---|
+| Tox AUC | 0.9176 | **0.9121** | 0.92 | Stage 1 only — S2 will push past 0.92 |
+| Tox F1 | 0.6486 (t=0.40) | 0.5273 (t=0.50) | 0.85 | S1 raw; expect 0.70+ after S2 + tuning |
+| Intent F1 | 0.5170 | 0.4634 | 0.80 | Recovering; S2 ToxiGen will lift this |
 
 ---
 
