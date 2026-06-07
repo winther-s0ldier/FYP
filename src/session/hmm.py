@@ -71,19 +71,46 @@ class SessionHMM:
             verbose=False,
         )
         model.fit(X, lengths)
+
+        # hmmlearn sizes emissionprob_ to (n_components, max_obs_seen+1).
+        # If an intent label like "grooming" (idx=16) never appears in the
+        # training split, the matrix has only e.g. 8 columns → IndexError when
+        # scoring sequences that contain those unseen intents.
+        # Fix: expand to the full vocabulary width first.
+        n_trained = model.emissionprob_.shape[1]
+        if n_trained < N_STATES:
+            pad = np.zeros((model.n_components, N_STATES - n_trained))
+            model.emissionprob_ = np.hstack([model.emissionprob_, pad])
+            model.n_features = N_STATES
+            
+        # Laplace smoothing: fills the padded zeros and prevents log(0)=-inf
+        # for intents absent from one class's training data.
+        eps = 1e-6
+        model.emissionprob_ = model.emissionprob_ + eps
+        model.emissionprob_ /= model.emissionprob_.sum(axis=1, keepdims=True)
+
         return model
 
     # --- Inference ---
 
-    def compute_risk(self, intent_sequence: list[str]) -> float:
+    def compute_risk(self, intent_sequence: list[str], window: int = 8) -> float:
         """
         Return session risk in [0, 1].
         High = sequence unlikely under benign model.
+
+        window: only the last `window` intents are scored.
+        Prevents benign history from diluting a sudden late-session threat.
+        Default 8 — long enough to capture escalation patterns, short enough
+        that a single threatening turn in a previously friendly session still
+        pushes risk above 0.5.
         """
         if not intent_sequence:
             return 0.0
         if self.benign_model is None:
             raise RuntimeError("HMM not trained. Run .fit() first.")
+
+        # Sliding window: cap at last `window` turns
+        intent_sequence = intent_sequence[-window:]
 
         X = np.array([[STATE2IDX.get(i, STATE2IDX["uncertain"])]
                       for i in intent_sequence])
@@ -91,15 +118,28 @@ class SessionHMM:
         try:
             log_prob_benign = self.benign_model.score(X)
             log_prob_malicious = self.malicious_model.score(X)
-        except Exception:
-            return 0.5  # fallback on degenerate sequence
+        except Exception as e:
+            # score() can raise if hmmlearn's forward pass hits a degenerate state.
+            # Laplace smoothing in _train_hmm should prevent this; if it still
+            # fires something is deeply wrong — treat as ambiguous, not benign.
+            print(f"[HMM] score() failed: {e}. Returning 0.5 (ambiguous).")
+            return 0.5
 
-        # Normalised risk: how much more likely is the malicious model?
-        # Clip to [0, 1]
-        prob_benign = np.exp(log_prob_benign)
-        prob_malicious = np.exp(log_prob_malicious)
-        total = prob_benign + prob_malicious + 1e-12
-        risk = prob_malicious / total
+        # Handle -inf: if one model can't score the sequence at all, assign
+        # full credit to the other.
+        if np.isneginf(log_prob_malicious) and np.isneginf(log_prob_benign):
+            return 0.5   # both confused — treat as ambiguous
+        if np.isneginf(log_prob_malicious):
+            return 0.0   # malicious model has no explanation → benign
+        if np.isneginf(log_prob_benign):
+            return 1.0   # benign model has no explanation → very suspicious
+
+        # Log-space computation using log-sum-exp trick — avoids float underflow.
+        # np.exp(-100) = 0.0, so naive division fails for long/rare sequences.
+        # logaddexp(a, b) = log(exp(a) + exp(b)) computed stably.
+        # risk = exp(log_mal - log(exp(log_ben) + exp(log_mal)))
+        log_total = np.logaddexp(log_prob_benign, log_prob_malicious)
+        risk = float(np.exp(log_prob_malicious - log_total))
         return float(np.clip(risk, 0.0, 1.0))
 
     def viterbi_sequence(self, intent_sequence: list[str]) -> list[str]:
