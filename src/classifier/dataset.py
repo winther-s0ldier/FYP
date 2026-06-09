@@ -629,7 +629,7 @@ def build_train_dataset(
             df["source"] = "toxic_chat"
             dfs.append(df)
             print(f"  Loaded Toxic-Chat: {len(df):,} rows  "
-                  f"({jb_rows} jailbreaking → social_engineering intent labels)")
+                  f"({jb_rows} jailbreaking -> social_engineering intent labels)")
 
     # Intent pre-training datasets (all benign, carry their own intent labels)
     banking = data_dir / "banking77"
@@ -750,9 +750,9 @@ def build_train_dataset(
     top3_heavy = sorted(INTENT_LABELS, key=lambda l: -weights[INTENT2IDX[l]])[:3]
     top3_light = sorted(INTENT_LABELS, key=lambda l: weights[INTENT2IDX[l]])[:3]
     for l in top3_heavy:
-        print(f"    {l:<25}  w={weights[INTENT2IDX[l]]:.2f}  (rare  → upweighted)")
+        print(f"    {l:<25}  w={weights[INTENT2IDX[l]]:.2f}  (rare  -> upweighted)")
     for l in top3_light:
-        print(f"    {l:<25}  w={weights[INTENT2IDX[l]]:.2f}  (common → downweighted)")
+        print(f"    {l:<25}  w={weights[INTENT2IDX[l]]:.2f}  (common -> downweighted)")
 
     return (
         ModerationDataset(train, tokenizer, max_length),
